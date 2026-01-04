@@ -32,7 +32,8 @@ class VLLMModel:
         self.llm = LLM(
             model=model_path,
             trust_remote_code=True,
-            tensor_parallel_size=torch.cuda.device_count()
+            tensor_parallel_size=torch.cuda.device_count(),
+            gpu_memory_utilization=0.7,
         )
         self.config = json.load(open(f'{config_dir}/generation_configs/{config_name}.json'))
         chat_template = open(f'{config_dir}/{self.config["chat_template"]}').read()

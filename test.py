@@ -66,7 +66,8 @@ if __name__ == '__main__':
 
     hf_token = args.hf_token
     if args.model == "llama3":
-        repo_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+        # repo_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+        repo_name = "meta-llama/Llama-3.2-1B-Instruct"
         config_name = "llama-3-instruct"
     else:
         repo_name = "google/gemma-1.1-7b-it"

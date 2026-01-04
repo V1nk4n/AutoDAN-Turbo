@@ -1,5 +1,5 @@
 from framework import Attacker, Scorer, Summarizer, Retrieval, Target
-from framework_o1 import Attacker_o1, Scorer_o1, Summarizer_o1
+from framework_r import Attacker_r, Scorer_r, Summarizer_r
 from llm import HuggingFaceModel, VLLMModel, OpenAIEmbeddingModel, DeepSeekModel
 import argparse
 import logging
@@ -120,11 +120,14 @@ if __name__ == '__main__':
 
     hf_token = args.hf_token
     if args.model == "llama3":
-        repo_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+        #repo_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+        repo_name = "meta-llama/Llama-3.2-1B-Instruct"
         config_name = "llama-3-instruct"
     else:
         repo_name = "google/gemma-1.1-7b-it"
         config_name = "gemma-it"
+    # repo_name = "Qwen/Qwen2.5-0.5B"
+    # config_name = "Qwen2.5-0.5B"
     if args.vllm:
         model = VLLMModel(repo_name, config_dir, config_name, hf_token)
     else:
@@ -135,6 +138,8 @@ if __name__ == '__main__':
     summarizer = Summarizer(model)
     repo_name = "google/gemma-1.1-7b-it"
     config_name = "gemma-it"
+    # repo_name = "Qwen/Qwen2.5-0.5B"
+    # config_name = "Qwen2.5-0.5B"
     scorer_model = HuggingFaceModel(repo_name, config_dir, config_name, hf_token)
     scorer = Scorer(scorer_model)
     # the vLLM cannot support multiple model yet, so here we load the scorer model via huggingface (you can use the same model as the base model, here we use gemma-1.1-7b-it for reproduction)

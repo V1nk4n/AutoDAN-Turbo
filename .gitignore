@@ -1,8 +1,5 @@
-<<<<<<< HEAD
-=======
 .idea/
 .DS_Store
->>>>>>> 77da8a7 (chore: initial commit from forked project)
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -210,9 +207,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-<<<<<<< HEAD
-=======
-
 
 wandb
->>>>>>> 77da8a7 (chore: initial commit from forked project)
+
+model_ckpt/

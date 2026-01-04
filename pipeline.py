@@ -102,7 +102,9 @@ class AutoDANTurbo:
         for i in range(self.warm_up_iterations):
             for request_id in range(len(self.data['warm_up'])):
                 request = self.data['warm_up'][request_id]
+                self.logger.info(f"Starting warm_up for request {request_id}: {request}")
                 for j in range(self.epochs):
+                    self.logger.info(f"Epoch {j}/{self.epochs} - Generating jailbreak prompt...")
                     jailbreak_prompt, attacker_system = self.attacker.warm_up_attack(request, max_length=10000, do_sample=True, temperature=1.0, top_p=1)
                     for word in self.refusal_list:
                         if word in jailbreak_prompt:

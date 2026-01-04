@@ -123,11 +123,14 @@ if __name__ == '__main__':
 
     hf_token = args.hf_token
     if args.model == "llama3":
-        repo_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+        # repo_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+        repo_name = "meta-llama/Llama-3.2-1B-Instruct"
         config_name = "llama-3-instruct"
     else:
         repo_name = "google/gemma-1.1-7b-it"
         config_name = "gemma-it"
+    # repo_name = "Qwen/Qwen2.5-0.5B"
+    # config_name = "Qwen2.5-0.5B"
     if args.vllm:
         model = VLLMModel(repo_name, config_dir, config_name, hf_token)
     else:

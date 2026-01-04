@@ -140,7 +140,16 @@ if __name__ == '__main__':
     config_name = "gemma-it"
     # repo_name = "Qwen/Qwen2.5-0.5B"
     # config_name = "Qwen2.5-0.5B"
-    scorer_model = HuggingFaceModel(repo_name, config_dir, config_name, hf_token)
+    # repo_name = "meta-llama/Llama-3.2-1B-Instruct"
+    # config_name = "llama-3-instruct"
+    scorer_model = HuggingFaceModel(
+        repo_name, 
+        config_dir, 
+        config_name, 
+        hf_token,
+        use_quantization=True,
+        quantization_type="4bit"
+    )
     scorer = Scorer(scorer_model)
     # the vLLM cannot support multiple model yet, so here we load the scorer model via huggingface (you can use the same model as the base model, here we use gemma-1.1-7b-it for reproduction)
 

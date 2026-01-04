@@ -1,0 +1,7 @@
+{
+    "temperature": 0,
+    "top_p": 0.9,
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.1,
+    "chat_template": "/model_ckpt/google_gemma-1.1-7b-it/chat_template.jinja"
+  }

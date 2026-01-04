@@ -1,11 +1,11 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
 import os
 import json
-
+from huggingface_hub import snapshot_download
 
 class HuggingFaceModel:
-    def __init__(self, repo_name: str, config_dir: str, config_name: str, token=None):
+    def __init__(self, repo_name: str, config_dir: str, config_name: str, token=None, use_quantization=False, quantization_type="4bit"):
         """
         Initialize the Hugging Face model class in a distributed manner.
 
@@ -20,19 +20,82 @@ class HuggingFaceModel:
         if not os.path.exists(model_dir):
             os.makedirs(model_dir)
         model_path = os.path.join(model_dir, repo_name.replace("/", "_"))
+
+        quantization_config = None
+        torch_dtype = torch.float16
+        
+        if use_quantization:
+            if quantization_type == "4bit":
+                print("Using 4-bit quantization (INT4)...")
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4"
+                )
+            elif quantization_type == "8bit":
+                print("Using 8-bit quantization (INT8)...")
+                quantization_config = BitsAndBytesConfig(
+                    load_in_8bit=True,
+                    llm_int8_threshold=6.0,
+                )
+            torch_dtype = None  # Don't set torch_dtype when using quantization
+
         if not os.path.exists(model_path):
-            print(f"Model not found in {model_path}. Downloading from Hugging Face...")
-            AutoModelForCausalLM.from_pretrained(repo_name, token=token).save_pretrained(model_path)
-            AutoTokenizer.from_pretrained(repo_name, token=token).save_pretrained(model_path)
-            print(f"Model downloaded and saved to {model_path}.")
+        #     print(f"Model not found in {model_path}. Downloading from Hugging Face...")
+        #     AutoModelForCausalLM.from_pretrained(repo_name, token=token).save_pretrained(model_path)
+        #     AutoTokenizer.from_pretrained(repo_name, token=token).save_pretrained(model_path)
+        #     print(f"Model downloaded and saved to {model_path}.")
+        # else:
+        #     print(f"Model found in {model_path}. Using cached model.")
+        # print(f"Loading model from {model_path}...")
+            print(f"Model not found in {model_path}. Downloading model files directly (without loading into memory)...")
+    
+            # ✅ Dùng snapshot_download để download files trực tiếp
+            print("Downloading model files from HuggingFace (this may take a while)...")
+            snapshot_download(
+                repo_id=repo_name,
+                token=token,
+                local_dir=model_path,
+                local_dir_use_symlinks=False,
+            )
+            
+            print(f"Model files downloaded to {model_path}.")
+            print("Loading model with quantization...")
+            
+            # Load tokenizer và model từ local với quantization
+            self.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                device_map="auto",
+                low_cpu_mem_usage=True,
+                quantization_config=quantization_config,
+                torch_dtype=torch_dtype,
+            )
+            print("Model loaded with quantization successfully!")
         else:
-            print(f"Model found in {model_path}. Using cached model.")
-        print(f"Loading model from {model_path}...")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            device_map="auto"
-        )
+            print(f"Model found in {model_path}. Loading from cache...")
+    
+            # ✅ Try load từ local, nếu fail thì load từ repo
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token)
+                print("Tokenizer loaded from cache.")
+            except Exception as e:
+                print(f"Failed to load tokenizer from local: {e}")
+                print("Re-downloading tokenizer from HuggingFace repo...")
+                self.tokenizer = AutoTokenizer.from_pretrained(repo_name, token=token)
+                self.tokenizer.save_pretrained(model_path)
+                print("Tokenizer re-downloaded and saved.")
+            
+            # Load từ local với quantization
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                device_map="auto",
+                low_cpu_mem_usage=True,
+                quantization_config=quantization_config,
+                torch_dtype=torch_dtype,
+            )
+
         self.config = json.load(open(f'{config_dir}/generation_configs/{config_name}.json'))
         chat_template = open(f'{config_dir}/{self.config["chat_template"]}').read()
         chat_template = chat_template.replace('    ', '').replace('\n', '')

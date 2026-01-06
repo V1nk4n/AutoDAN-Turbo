@@ -131,17 +131,25 @@ if __name__ == '__main__':
     if args.vllm:
         model = VLLMModel(repo_name, config_dir, config_name, hf_token)
     else:
-        model = HuggingFaceModel(repo_name, config_dir, config_name, hf_token)
+        # ✅ Thêm quantization cho model chính để giảm VRAM usage
+        model = HuggingFaceModel(
+            repo_name, 
+            config_dir, 
+            config_name, 
+            hf_token,
+            use_quantization=True,
+            quantization_type="4bit"
+        )
     # configure your own base model here
 
     attacker = Attacker(model)
     summarizer = Summarizer(model)
-    repo_name = "google/gemma-1.1-7b-it"
-    config_name = "gemma-it"
+    # repo_name = "google/gemma-1.1-7b-it"
+    # config_name = "gemma-it"
     # repo_name = "Qwen/Qwen2.5-0.5B"
     # config_name = "Qwen2.5-0.5B"
-    # repo_name = "meta-llama/Llama-3.2-1B-Instruct"
-    # config_name = "llama-3-instruct"
+    repo_name = "meta-llama/Llama-3.2-1B-Instruct"
+    config_name = "llama-3-instruct"
     scorer_model = HuggingFaceModel(
         repo_name, 
         config_dir, 
@@ -150,6 +158,11 @@ if __name__ == '__main__':
         use_quantization=True,
         quantization_type="4bit"
     )
+    # ✅ Clear cache sau khi load scorer model
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print("CUDA cache cleared after loading scorer model.")
     scorer = Scorer(scorer_model)
     # the vLLM cannot support multiple model yet, so here we load the scorer model via huggingface (you can use the same model as the base model, here we use gemma-1.1-7b-it for reproduction)
 

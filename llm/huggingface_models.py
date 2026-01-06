@@ -65,14 +65,21 @@ class HuggingFaceModel:
             
             # Load tokenizer và model từ local với quantization
             self.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token)
+            # ✅ Khi dùng quantization, phải force lên GPU (không thể dùng "auto" vì sẽ dispatch lên CPU/disk)
+            device_map_value = "cuda:0" if torch.cuda.is_available() and use_quantization else "auto"
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
-                device_map="auto",
+                device_map=device_map_value,
                 low_cpu_mem_usage=True,
                 quantization_config=quantization_config,
                 torch_dtype=torch_dtype,
             )
             print("Model loaded with quantization successfully!")
+            
+            # ✅ Clear CUDA cache sau khi load để giải phóng memory
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print("CUDA cache cleared.")
         else:
             print(f"Model found in {model_path}. Loading from cache...")
     
@@ -88,13 +95,20 @@ class HuggingFaceModel:
                 print("Tokenizer re-downloaded and saved.")
             
             # Load từ local với quantization
+            # ✅ Khi dùng quantization, phải force lên GPU (không thể dùng "auto" vì sẽ dispatch lên CPU/disk)
+            device_map_value = "cuda:0" if torch.cuda.is_available() and use_quantization else "auto"
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
-                device_map="auto",
+                device_map=device_map_value,
                 low_cpu_mem_usage=True,
                 quantization_config=quantization_config,
                 torch_dtype=torch_dtype,
             )
+            
+            # ✅ Clear CUDA cache sau khi load để giải phóng memory
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print("CUDA cache cleared.")
 
         self.config = json.load(open(f'{config_dir}/generation_configs/{config_name}.json'))
         chat_template = open(f'{config_dir}/{self.config["chat_template"]}').read()
@@ -128,7 +142,7 @@ class HuggingFaceModel:
 
         outputs = self.model.generate(
             **inputs,
-            max_length=max_length,
+            max_new_tokens=min(max_length, 2000),
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
             **kwargs,

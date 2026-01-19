@@ -110,10 +110,31 @@ class HuggingFaceModel:
                 torch.cuda.empty_cache()
                 print("CUDA cache cleared.")
 
+ 
         self.config = json.load(open(f'{config_dir}/generation_configs/{config_name}.json'))
-        chat_template = open(f'{config_dir}/{self.config["chat_template"]}').read()
-        chat_template = chat_template.replace('    ', '').replace('\n', '')
-        self.tokenizer.chat_template = chat_template
+
+        # ✅ Ưu tiên custom chat_template từ file
+        chat_template_path = f'{config_dir}/{self.config.get("chat_template", "")}'
+        custom_template_loaded = False
+
+        if chat_template_path and os.path.exists(chat_template_path):
+            try:
+                # Load custom chat template từ file
+                with open(chat_template_path, 'r', encoding='utf-8') as f:
+                    chat_template = f.read()
+                # Set chat template (không cần replace spaces vì jinja cần format)
+                self.tokenizer.chat_template = chat_template
+                custom_template_loaded = True
+                print(f"✅ Loaded custom chat template from {chat_template_path}")
+            except Exception as e:
+                print(f"⚠️ Failed to load custom chat template from {chat_template_path}: {e}")
+
+        # ✅ Fallback: dùng chat_template mặc định của tokenizer nếu custom không có
+        if not custom_template_loaded:
+            if hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template is not None:
+                print("⚠️ Using tokenizer's built-in chat template (no custom template found)")
+            else:
+                print(f"⚠️ Warning: No chat template available (neither custom nor tokenizer default)")
         print("Model loaded with automatic device mapping across GPUs.")
 
     def generate(self, system: str, user: str, max_length: int = 1000, **kwargs):
@@ -142,7 +163,7 @@ class HuggingFaceModel:
 
         outputs = self.model.generate(
             **inputs,
-            max_new_tokens=min(max_length, 2000),
+            max_new_tokens=min(max_length, 4096),
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
             **kwargs,
@@ -198,7 +219,7 @@ class HuggingFaceModel:
             condition (str): Condition for the generation (appended to the prompt).
             system (str): System message for the model.
             user (str): User message for the model.
-            max_length (int): Maximum length of the generated response.
+            max_length (int): Maximum length of the generated response (treated as max_new_tokens).
             **kwargs: Additional optional parameters such as temperature, top_k, top_p.
 
         Returns:
@@ -213,10 +234,40 @@ class HuggingFaceModel:
 
         inputs = self.tokenizer(plain_text, return_tensors="pt")
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        
+        # Calculate input length
+        input_length = inputs["input_ids"].shape[-1]
+        
+        # Use max_new_tokens instead of max_length to avoid conflicts
+        # max_length is treated as max_new_tokens (tokens to generate)
+        # But we need to ensure it doesn't exceed model's context window
+        max_new_tokens = min(max_length, 4096)  # Cap at 4096 for safety
+        
+        # If input is already too long, reduce max_new_tokens proportionally
+        # Most models have context window of 8192 or more
+        # We'll allow up to 8192 total tokens (input + output)
+        max_total_length = 8192
+        min_new_tokens = 16  # Minimum tokens to generate (fallback value)
+        
+        if input_length >= max_total_length:
+            # Input is too long, truncate it to make room for output
+            # Keep the most recent part of the input (tail) and reserve space for output
+            truncate_length = max_total_length - min_new_tokens
+            for k, v in inputs.items():
+                if v.shape[-1] > truncate_length:
+                    inputs[k] = v[:, -truncate_length:]
+                    input_length = truncate_length
+            max_new_tokens = min_new_tokens
+        elif input_length + max_new_tokens > max_total_length:
+            max_new_tokens = max_total_length - input_length
+        
+        # Final safety check: ensure max_new_tokens is always > 0
+        if max_new_tokens <= 0:
+            max_new_tokens = min_new_tokens
 
         outputs = self.model.generate(
             **inputs,
-            max_length=max_length,
+            max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
             **kwargs,

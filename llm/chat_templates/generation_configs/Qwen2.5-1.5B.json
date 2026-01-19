@@ -1,0 +1,7 @@
+{
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "max_new_tokens": 2048,
+    "repetition_penalty": 1.8,
+    "chat_template": "/model_ckpt/Qwen_Qwen2.5-1.5B/chat_template.jinja"
+  }

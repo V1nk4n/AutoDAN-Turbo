@@ -5,10 +5,10 @@ import wandb
 
 class AutoDANTurbo:
     # ✅ Constants for max_length to easily adjust generation limits
-    MAX_LENGTH_ATTACKER = 2000      # Max length for attacker jailbreak generation
-    MAX_LENGTH_SCORER = 2000        # Max length for scorer assessment generation
-    MAX_LENGTH_WRAPPER = 2000       # Max length for wrapper extraction
-    MAX_LENGTH_SUMMARIZER = 2000   # Max length for summarizer generation
+    MAX_LENGTH_ATTACKER = 4096      # Max length for attacker jailbreak generation
+    MAX_LENGTH_SCORER = 4096        # Max length for scorer assessment generation
+    MAX_LENGTH_WRAPPER = 4096       # Max length for wrapper extraction
+    MAX_LENGTH_SUMMARIZER = 8192   # Max length for summarizer generation (increased to handle longer inputs)
     
     def __init__(self, turbo_framework: dict, data, target, epochs=150, break_score=8.5, warm_up_iterations=1, lifelong_iterations=4):
         self.attacker = turbo_framework['attacker']
@@ -62,6 +62,9 @@ class AutoDANTurbo:
                     strategy, summarizer_system = self.summarizer.summarize(request, jailbreak_prompt_i, jailbreak_prompt_j, current_library, max_length=self.MAX_LENGTH_SUMMARIZER, do_sample=True, temperature=0.6, top_p=0.9)
                     json_formatted_strategy = self.summarizer.wrapper(strategy, max_length=self.MAX_LENGTH_WRAPPER, do_sample=True, temperature=0.6, top_p=0.9)
                     jailbreak_strategy = json.loads(json_formatted_strategy)
+                    # Validate that required keys exist
+                    if "Strategy" not in jailbreak_strategy or "Definition" not in jailbreak_strategy:
+                        raise ValueError(f"Missing required keys in strategy JSON. Got keys: {list(jailbreak_strategy.keys())}")
                     not_scussed = False
                 except Exception as e:
                     self.logger.error(f"Summarizer failed to summarize the strategy: {e}")
@@ -224,9 +227,12 @@ class AutoDANTurbo:
                                 strategy, summarizer_system = self.summarizer.summarize(request, prev_jailbreak_prompt, jailbreak_prompt, current_library, max_length=self.MAX_LENGTH_SUMMARIZER, do_sample=True, temperature=0.6, top_p=0.9)
                                 json_formatted_strategy = self.summarizer.wrapper(strategy, max_length=self.MAX_LENGTH_WRAPPER, do_sample=True, temperature=0.6, top_p=0.9)
                                 jailbreak_strategy = json.loads(json_formatted_strategy)
+                                # Validate that required keys exist
+                                if "Strategy" not in jailbreak_strategy or "Definition" not in jailbreak_strategy:
+                                    raise ValueError(f"Missing required keys in strategy JSON. Got keys: {list(jailbreak_strategy.keys())}")
                                 not_scussed = False
-                            except:
-                                self.logger.error("Summarizer failed to summarize the strategy, retrying")
+                            except Exception as e:
+                                self.logger.error(f"Summarizer failed to summarize the strategy: {e}")
                                 continue
                         jailbreak_strategy["Example"] = [jailbreak_prompt]
                         jailbreak_strategy["Score"] = [score - prev_score]

@@ -1,6 +1,6 @@
 import openai
 import logging
-from openai import AzureOpenAI
+from openai import AzureOpenAI, OpenAI
 import json
 
 
@@ -30,7 +30,8 @@ class OpenAIEmbeddingModel:
                 azure_endpoint=azure_endpoint
             )
         else:
-            openai.api_key = openai_api_key
+            # Use new OpenAI client API for openai>=1.0.0
+            self.client = OpenAI(api_key=openai_api_key)
 
     def encode(self, text):
         try:
@@ -48,14 +49,22 @@ class OpenAIEmbeddingModel:
                 data = sorted(data, key=lambda x: x["index"])
                 embeddings = [d["embedding"] for d in data]
             else:
-                response = openai.Embedding.create(
+                # Use new OpenAI client API
+                response = self.client.embeddings.create(
                     input=text,
                     model=self.embedding_model
                 )
-                embeddings = [item["embedding"] for item in response["data"]]
+                data_json = response.model_dump_json(indent=2)
+                data = json.loads(data_json)["data"]
+                data = sorted(data, key=lambda x: x["index"])
+                embeddings = [d["embedding"] for d in data]
             if single_input and len(embeddings) == 1:
                 return embeddings[0]
             return embeddings
         except Exception as e:
-            self.logger.error(f"Embedding error: {e}", exc_info=True)
+            # Handle case when logger is None
+            if self.logger:
+                self.logger.error(f"Embedding error: {e}", exc_info=True)
+            else:
+                print(f"Embedding error: {e}")
             return None

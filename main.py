@@ -1,6 +1,7 @@
 from framework import Attacker, Scorer, Summarizer, Retrieval, Target
 from framework_r import Attacker_r, Scorer_r, Summarizer_r
-from llm import HuggingFaceModel, VLLMModel, OpenAIEmbeddingModel, DeepSeekModel
+# from llm import HuggingFaceModel, VLLMModel, OpenAIEmbeddingModel, DeepSeekModel
+from llm import HuggingFaceModel, OpenAIEmbeddingModel, DeepSeekModel
 import argparse
 import logging
 import os
@@ -32,6 +33,13 @@ def config():
 
     config.add_argument("--openai_api_key", type=str, default="your_openai_api_key")
     config.add_argument("--embedding_model", type=str, default="text-embedding-ada-002")
+    
+    # Add local embedding option
+    config.add_argument("--use_local_embedding", action='store_true', 
+                       help='Use local embedding model instead of OpenAI API')
+    config.add_argument("--local_embedding_model", type=str, 
+                       default="sentence-transformers/all-mpnet-base-v2",
+                       help='Local embedding model name from sentence-transformers')
 
     config.add_argument("--hf_token", type=str, default="your_hf_token")
 
@@ -111,6 +119,23 @@ if __name__ == '__main__':
 
     utc_now = datetime.datetime.now(datetime.timezone.utc)
     wandb.init(project=f"AutoDAN-Turbo", name=f"running-{utc_now}")
+    
+    # ✅ Thêm file handler cho wandb directory
+    try:
+        # wandb.run.dir trỏ đến files/, cần lấy parent để có root của run directory
+        wandb_run_root = os.path.dirname(wandb.run.dir)  # Lấy parent directory
+        wandb_logs_dir = os.path.join(wandb_run_root, 'logs')
+        os.makedirs(wandb_logs_dir, exist_ok=True)
+        wandb_log_file = os.path.join(wandb_logs_dir, 'running.log')
+        
+        wandb_file_handler = logging.FileHandler(wandb_log_file)
+        wandb_file_handler.setLevel(logging.INFO)
+        wandb_file_handler.setFormatter(file_formatter)
+        logger.addHandler(wandb_file_handler)
+        logger.info(f"✅ Logging to wandb directory: {wandb_log_file}")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to setup wandb logging: {e}")
+    
     args = config().parse_args()
 
     config_dir = args.chat_config
@@ -121,15 +146,20 @@ if __name__ == '__main__':
     hf_token = args.hf_token
     if args.model == "llama3":
         #repo_name = "meta-llama/Meta-Llama-3-8B-Instruct"
-        repo_name = "meta-llama/Llama-3.2-1B-Instruct"
-        config_name = "llama-3-instruct"
+        # repo_name = "meta-llama/Llama-3.2-1B-Instruct"
+        # config_name = "llama-3-instruct"
+        # repo_name = "meta-llama/Llama-3.2-1B"
+        # config_name = "llama-3"
+        repo_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        config_name = "Qwen2.5-1.5B-Instruct"
     else:
         repo_name = "google/gemma-1.1-7b-it"
         config_name = "gemma-it"
     # repo_name = "Qwen/Qwen2.5-0.5B"
     # config_name = "Qwen2.5-0.5B"
     if args.vllm:
-        model = VLLMModel(repo_name, config_dir, config_name, hf_token)
+        # model = VLLMModel(repo_name, config_dir, config_name, hf_token)
+        pass
     else:
         # ✅ Thêm quantization cho model chính để giảm VRAM usage
         model = HuggingFaceModel(
@@ -146,10 +176,12 @@ if __name__ == '__main__':
     summarizer = Summarizer(model)
     # repo_name = "google/gemma-1.1-7b-it"
     # config_name = "gemma-it"
-    # repo_name = "Qwen/Qwen2.5-0.5B"
-    # config_name = "Qwen2.5-0.5B"
-    repo_name = "meta-llama/Llama-3.2-1B-Instruct"
-    config_name = "llama-3-instruct"
+    repo_name = "Qwen/Qwen2.5-1.5B-Instruct"
+    config_name = "Qwen2.5-1.5B-Instruct"
+    # repo_name = "meta-llama/Llama-3.2-1B-Instruct"
+    # config_name = "llama-3-instruct"
+    # repo_name = "meta-llama/Llama-3.2-1B"
+    # config_name = "llama-3"
     scorer_model = HuggingFaceModel(
         repo_name, 
         config_dir, 
@@ -166,7 +198,15 @@ if __name__ == '__main__':
     scorer = Scorer(scorer_model)
     # the vLLM cannot support multiple model yet, so here we load the scorer model via huggingface (you can use the same model as the base model, here we use gemma-1.1-7b-it for reproduction)
 
-    if args.azure:
+    # Choose embedding model: local or OpenAI
+    if args.use_local_embedding:
+        from llm import LocalEmbeddingModel
+        text_embedding_model = LocalEmbeddingModel(
+            model_name=args.local_embedding_model,
+            device=None,  # Auto-detect
+            logger=logger
+        )
+    elif args.azure:
         text_embedding_model = OpenAIEmbeddingModel(azure=True,
                                                     azure_endpoint=args.azure_endpoint,
                                                     azure_api_version=args.azure_api_version,
@@ -176,7 +216,8 @@ if __name__ == '__main__':
     else:
         text_embedding_model = OpenAIEmbeddingModel(azure=False,
                                                     openai_api_key=args.openai_api_key,
-                                                    embedding_model=args.embedding_model)
+                                                    embedding_model=args.embedding_model,
+                                                    logger=logger)
     retrival = Retrieval(text_embedding_model, logger)
 
     if args.debug:

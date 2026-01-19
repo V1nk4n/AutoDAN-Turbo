@@ -8,7 +8,14 @@ class Summarizer():
 
     def summarize(self, request, jailbreak_prompt_1, jailbreak_prompt_2, strategy_library, **kwargs):
         existing_strategies_list = []
-        for key, value_dict in strategy_library.items():
+        # Limit the number of strategies to avoid prompt being too long
+        # Keep only the most recent strategies (last 100) to prevent context window overflow
+        max_strategies = 100
+        strategy_items = list(strategy_library.items())
+        # Take the most recent strategies (tail of the list)
+        recent_strategies = strategy_items[-max_strategies:] if len(strategy_items) > max_strategies else strategy_items
+        
+        for key, value_dict in recent_strategies:
             new_dict = {"Strategy": value_dict["Strategy"], "Definition": value_dict["Definition"]}
             existing_strategies_list.append(new_dict)
         existing_strategies = json.dumps(existing_strategies_list, indent=4, ensure_ascii=False)

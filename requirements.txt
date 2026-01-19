@@ -1,5 +1,4 @@
 torchvision
-vllm>=0.3.0
 transformers
 sentence_transformers
 ray

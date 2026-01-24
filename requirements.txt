@@ -23,3 +23,5 @@ fschat
 faiss-cpu
 bitsandbytes
 requests
+datasets
+huggingface_hub

@@ -383,7 +383,7 @@ class AutoDANTurbo:
             for word in self.refusal_list:
                 if word in jailbreak_prompt:
                     jailbreak_prompt = request
-                    break
+                break
 
             target_response = self.target.respond(jailbreak_prompt)
             score, assessment, _ = self._score_target_response(request, target_response)
@@ -451,12 +451,12 @@ class AutoDANTurbo:
                     )
 
             # Quick refusal-phrase check on the prompt itself (legacy behavior)
-            for word in self.refusal_list:
-                if word in jailbreak_prompt:
-                    jailbreak_prompt = request
+                    for word in self.refusal_list:
+                        if word in jailbreak_prompt:
+                            jailbreak_prompt = request
                     break
 
-            target_response = self.target.respond(jailbreak_prompt)
+                target_response = self.target.respond(jailbreak_prompt)
             
             # Evaluate with HarmBench classifier
             is_harmful, classifier_response = harmbench_classifier.classify(

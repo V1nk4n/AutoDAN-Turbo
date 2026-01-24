@@ -5,3 +5,4 @@ from .library import Library
 from .log import Log
 from .retrival import Retrieval
 from .target import Target
+from .harmbench_classifier import HarmBenchClassifier

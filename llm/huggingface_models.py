@@ -110,7 +110,7 @@ class HuggingFaceModel:
                 torch.cuda.empty_cache()
                 print("CUDA cache cleared.")
 
- 
+
         self.config = json.load(open(f'{config_dir}/generation_configs/{config_name}.json'))
 
         # ✅ Ưu tiên custom chat_template từ file

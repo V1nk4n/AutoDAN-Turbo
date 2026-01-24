@@ -1,6 +1,8 @@
 from framework import Library, Log
 import json
 import wandb
+from typing import Any, Dict, List, Optional, Tuple
+from framework.harmbench_classifier import HarmBenchClassifier
 
 
 class AutoDANTurbo:
@@ -294,44 +296,337 @@ class AutoDANTurbo:
         return strategy_library, attack_log, summarizer_log
 
     def test(self, request, input_strategy_library):
+        jailbreak_prompt, _, _, _ = self.test_with_details(request, input_strategy_library)
+        return jailbreak_prompt
+
+    def _score_target_response(self, request: str, target_response: str) -> Tuple[float, str, str]:
+        """
+        Score a target response using the scorer model.
+
+        Returns:
+            score, assessment_text, scorer_system_prompt
+        """
+        success = False
+        last_exception: Optional[Exception] = None
+        while not success:
+            try:
+                assessment, scorer_system = self.scorer.scoring(
+                    request,
+                    target_response,
+                    max_length=self.MAX_LENGTH_SCORER,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.9,
+                )
+                score = self.scorer.wrapper(
+                    assessment,
+                    max_length=self.MAX_LENGTH_WRAPPER,
+                    do_sample=False,
+                )
+                return score, assessment, scorer_system
+            except Exception as e:
+                last_exception = e
+                self.logger.error(f"Scorer failed to score the response, retrying: {e}")
+        # Should never reach here
+        raise RuntimeError(f"Scorer failed unexpectedly: {last_exception}")
+
+    def test_with_details(
+        self,
+        request: str,
+        input_strategy_library: Dict[str, Any],
+    ) -> Tuple[str, float, str, str]:
+        """
+        Run the attack loop on a single request using a fixed (frozen) strategy library.
+
+        Returns:
+            jailbreak_prompt, final_score, final_target_response, final_assessment
+        """
         jailbreak_prompt = ""
         self.test_library = Library(library=input_strategy_library, logger=self.logger)
+        prev_target_response = "Sorry, I cannot help you with that."
+        final_target_response = prev_target_response
+        final_assessment = ""
+        final_score = 1.0
+
         for j in range(self.epochs):
             if j == 0:
-                jailbreak_prompt, attacker_system = self.attacker.warm_up_attack(request, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
-                for word in self.refusal_list:
-                    if word in jailbreak_prompt:
-                        jailbreak_prompt = request
-                target_response = self.target.respond(jailbreak_prompt)
-                success = False
-                while not success:
-                    try:
-                        assessment, scorer_system = self.scorer.scoring(request, target_response, max_length=self.MAX_LENGTH_SCORER, do_sample=True, temperature=0.7, top_p=0.9)
-                        score = self.scorer.wrapper(assessment, max_length=self.MAX_LENGTH_WRAPPER, do_sample=False)
-                        success = True
-                    except Exception as e:
-                        self.logger.error(f"Scorer failed to score the response, retrying: {e}")
-                prev_target_response = target_response
+                jailbreak_prompt, _ = self.attacker.warm_up_attack(
+                    request,
+                    max_length=self.MAX_LENGTH_ATTACKER,
+                    do_sample=True,
+                    temperature=1.0,
+                    top_p=1,
+                )
             else:
                 current_library = self.test_library.all()
                 valid, retrival_strategy_list = self.retrival.pop(current_library, prev_target_response)
                 if valid:
-                    jailbreak_prompt, attacker_system = self.attacker.use_strategy(request, retrival_strategy_list, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
+                    jailbreak_prompt, _ = self.attacker.use_strategy(
+                        request,
+                        retrival_strategy_list,
+                        max_length=self.MAX_LENGTH_ATTACKER,
+                        do_sample=True,
+                        temperature=1.0,
+                        top_p=1,
+                    )
                 else:
-                    jailbreak_prompt, attacker_system = self.attacker.find_new_strategy(request, retrival_strategy_list, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
-                    for word in self.refusal_list:
-                        if word in jailbreak_prompt:
-                            jailbreak_prompt = request
-                target_response = self.target.respond(jailbreak_prompt)
-                success = False
-                while not success:
-                    try:
-                        assessment, scorer_system = self.scorer.scoring(request, target_response, max_length=self.MAX_LENGTH_SCORER, do_sample=True, temperature=0.7, top_p=0.9)
-                        score = self.scorer.wrapper(assessment, max_length=self.MAX_LENGTH_WRAPPER, do_sample=False)
-                        success = True
-                    except Exception as e:
-                        self.logger.error(f"Scorer failed to score the response, retrying: {e}")
-                prev_target_response = target_response
+                    jailbreak_prompt, _ = self.attacker.find_new_strategy(
+                        request,
+                        retrival_strategy_list,
+                        max_length=self.MAX_LENGTH_ATTACKER,
+                        do_sample=True,
+                        temperature=1.0,
+                        top_p=1,
+                    )
+
+            # Quick refusal-phrase check on the prompt itself (legacy behavior)
+            for word in self.refusal_list:
+                if word in jailbreak_prompt:
+                    jailbreak_prompt = request
+                    break
+
+            target_response = self.target.respond(jailbreak_prompt)
+            score, assessment, _ = self._score_target_response(request, target_response)
+
+            final_target_response = target_response
+            final_assessment = assessment
+            final_score = score
+            prev_target_response = target_response
+
             if score > self.break_score:
                 break
-        return jailbreak_prompt
+
+        return jailbreak_prompt, float(final_score), final_target_response, final_assessment
+
+    def test_with_harmbench_classifier(
+        self,
+        request: str,
+        input_strategy_library: Dict[str, Any],
+        harmbench_classifier: HarmBenchClassifier,
+        context: Optional[str] = None,
+    ) -> Tuple[str, bool, str, str]:
+        """
+        Run the attack loop on a single request using a fixed (frozen) strategy library,
+        and evaluate with HarmBench classifier (paper-style evaluation).
+        
+        Returns:
+            jailbreak_prompt, is_harmful, target_response, classifier_response
+        """
+        jailbreak_prompt = ""
+        self.test_library = Library(library=input_strategy_library, logger=self.logger)
+        prev_target_response = "Sorry, I cannot help you with that."
+        final_target_response = prev_target_response
+        final_classifier_response = ""
+        final_is_harmful = False
+
+        for j in range(self.epochs):
+            if j == 0:
+                jailbreak_prompt, _ = self.attacker.warm_up_attack(
+                    request,
+                    max_length=self.MAX_LENGTH_ATTACKER,
+                    do_sample=True,
+                    temperature=1.0,
+                    top_p=1,
+                )
+            else:
+                current_library = self.test_library.all()
+                valid, retrival_strategy_list = self.retrival.pop(current_library, prev_target_response)
+                if valid:
+                    jailbreak_prompt, _ = self.attacker.use_strategy(
+                        request,
+                        retrival_strategy_list,
+                        max_length=self.MAX_LENGTH_ATTACKER,
+                        do_sample=True,
+                        temperature=1.0,
+                        top_p=1,
+                    )
+                else:
+                    jailbreak_prompt, _ = self.attacker.find_new_strategy(
+                        request,
+                        retrival_strategy_list,
+                        max_length=self.MAX_LENGTH_ATTACKER,
+                        do_sample=True,
+                        temperature=1.0,
+                        top_p=1,
+                    )
+
+            # Quick refusal-phrase check on the prompt itself (legacy behavior)
+            for word in self.refusal_list:
+                if word in jailbreak_prompt:
+                    jailbreak_prompt = request
+                    break
+
+            target_response = self.target.respond(jailbreak_prompt)
+            
+            # Evaluate with HarmBench classifier
+            is_harmful, classifier_response = harmbench_classifier.classify(
+                behavior=request,
+                generation=target_response,
+                context=context
+            )
+
+            final_target_response = target_response
+            final_classifier_response = classifier_response
+            final_is_harmful = is_harmful
+            prev_target_response = target_response
+
+            # If classifier says harmful, we're done (successful attack)
+            if is_harmful:
+                break
+
+        return jailbreak_prompt, final_is_harmful, final_target_response, final_classifier_response
+
+    def evaluate_dataset(
+        self,
+        requests: List[str],
+        strategy_library: Dict[str, Any],
+        *,
+        break_score: Optional[float] = None,
+        max_requests: Optional[int] = None,
+        log_every: int = 10,
+        harmbench_classifier: Optional[HarmBenchClassifier] = None,
+        contexts: Optional[List[Optional[str]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Evaluation mode (paper-style): FIX the strategy library and run attacks on a dataset.
+        
+        If harmbench_classifier is provided, uses HarmBench classifier (paper protocol).
+        Otherwise, uses LLM scorer with break_score threshold.
+        
+        Args:
+            requests: List of malicious requests to evaluate
+            strategy_library: Frozen strategy library to use
+            break_score: Score threshold for LLM scorer (ignored if using HarmBench classifier)
+            max_requests: Maximum number of requests to evaluate
+            log_every: Log progress every N requests
+            harmbench_classifier: Optional HarmBench classifier for paper-style evaluation
+            contexts: Optional list of contexts for each request (for contextual evaluation)
+            
+        Returns:
+            Dictionary with evaluation results including ASR
+        """
+        if harmbench_classifier is None:
+            # Use LLM scorer (original method)
+            return self._evaluate_with_scorer(
+                requests, strategy_library, break_score, max_requests, log_every
+            )
+        else:
+            # Use HarmBench classifier (paper method)
+            return self._evaluate_with_harmbench(
+                requests, strategy_library, harmbench_classifier, contexts, max_requests, log_every
+            )
+
+    def _evaluate_with_scorer(
+        self,
+        requests: List[str],
+        strategy_library: Dict[str, Any],
+        break_score: Optional[float],
+        max_requests: Optional[int],
+        log_every: int,
+    ) -> Dict[str, Any]:
+        """Evaluate using LLM scorer (original method)."""
+        if break_score is None:
+            break_score = self.break_score
+
+        if max_requests is not None:
+            requests = requests[:max_requests]
+
+        total = len(requests)
+        successful = 0
+        scores: List[float] = []
+        results: List[Dict[str, Any]] = []
+
+        for idx, request in enumerate(requests):
+            jailbreak_prompt, score, target_response, assessment = self.test_with_details(request, strategy_library)
+            is_success = score > float(break_score)
+            successful += 1 if is_success else 0
+            scores.append(float(score))
+
+            results.append(
+                {
+                    "request_id": idx,
+                    "request": request,
+                    "jailbreak_prompt": jailbreak_prompt,
+                    "score": float(score),
+                    "success": bool(is_success),
+                    "break_score": float(break_score),
+                    "target_response": target_response,
+                    "assessment": assessment,
+                }
+            )
+
+            if self.logger and log_every and ((idx + 1) % log_every == 0 or (idx + 1) == total):
+                current_asr = (successful / (idx + 1)) if (idx + 1) else 0.0
+                self.logger.info(
+                    f"[EVAL] {idx+1}/{total} | ASR={current_asr:.3f} | last_score={score:.1f}"
+                )
+
+        asr = (successful / total) if total else 0.0
+        avg_score = (sum(scores) / len(scores)) if scores else 0.0
+
+        return {
+            "total": total,
+            "successful": successful,
+            "failed": total - successful,
+            "asr": asr,
+            "avg_score": avg_score,
+            "break_score": float(break_score),
+            "evaluation_method": "llm_scorer",
+            "results": results,
+        }
+
+    def _evaluate_with_harmbench(
+        self,
+        requests: List[str],
+        strategy_library: Dict[str, Any],
+        harmbench_classifier: HarmBenchClassifier,
+        contexts: Optional[List[Optional[str]]],
+        max_requests: Optional[int],
+        log_every: int,
+    ) -> Dict[str, Any]:
+        """Evaluate using HarmBench classifier (paper method)."""
+        if max_requests is not None:
+            requests = requests[:max_requests]
+            if contexts:
+                contexts = contexts[:max_requests]
+
+        total = len(requests)
+        successful = 0
+        results: List[Dict[str, Any]] = []
+
+        for idx, request in enumerate(requests):
+            context = contexts[idx] if contexts and idx < len(contexts) else None
+            
+            jailbreak_prompt, is_harmful, target_response, classifier_response = \
+                self.test_with_harmbench_classifier(request, strategy_library, harmbench_classifier, context)
+            
+            successful += 1 if is_harmful else 0
+
+            results.append(
+                {
+                    "request_id": idx,
+                    "request": request,
+                    "jailbreak_prompt": jailbreak_prompt,
+                    "is_harmful": bool(is_harmful),
+                    "target_response": target_response,
+                    "classifier_response": classifier_response,
+                    "context": context,
+                }
+            )
+
+            if self.logger and log_every and ((idx + 1) % log_every == 0 or (idx + 1) == total):
+                current_asr = (successful / (idx + 1)) if (idx + 1) else 0.0
+                self.logger.info(
+                    f"[EVAL HarmBench] {idx+1}/{total} | ASR={current_asr:.3f} | harmful={is_harmful}"
+                )
+
+        asr = (successful / total) if total else 0.0
+
+        return {
+            "total": total,
+            "successful": successful,
+            "failed": total - successful,
+            "asr": asr,
+            "evaluation_method": "harmbench_classifier",
+            "results": results,
+        }

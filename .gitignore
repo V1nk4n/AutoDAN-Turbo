@@ -213,3 +213,6 @@ wandb
 model_ckpt/
 models/
 harmbench-mistral-7b-q8_0.gguf
+
+logs/lifelong_summarizer_log.json
+logs/lifelong_attack_log.json 

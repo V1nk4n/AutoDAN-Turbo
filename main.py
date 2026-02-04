@@ -47,6 +47,15 @@ def config():
     config.add_argument("--deepseek_model", type=str, default="the_deepseek_model")
 
     config.add_argument("--debug", action='store_true', help='debug')
+    config.add_argument("--log_every", type=int, default=10, 
+                       help="Log detailed info every N epochs (default: 10, set to 1 for all epochs)")
+    
+    # Flags to run individual phases
+    config.add_argument("--only_warm_up", action='store_true',
+                       help="Only run warm_up phase, then exit. Saves warm_up results to logs/")
+    config.add_argument("--only_lifelong", type=int, default=None,
+                       help="Only run a specific lifelong iteration (1-indexed, e.g., --only_lifelong 1 for first iteration). Requires warm_up results for iteration 1, or previous lifelong results for iteration > 1.")
+    
     return config
 
 
@@ -249,7 +258,8 @@ if __name__ == '__main__':
                                           target=target,
                                           epochs=epcohs,
                                           warm_up_iterations=warm_up_iterations,
-                                          lifelong_iterations=1)
+                                          lifelong_iterations=1,
+                                          log_every=args.log_every)
     # We placed the iterations afterward to ensure the program saves the running results after each iteration. Alternatively, you can set lifelong_iterations using args.lifelong_iterations.
 
     if args.debug:
@@ -274,11 +284,76 @@ if __name__ == '__main__':
         warm_up_summarizer_log_file = f'./logs/warm_up_summarizer_log{suffix}.json'
         save_data(warm_up_strategy_library, warm_up_attack_log, warm_up_summarizer_log, warm_up_strategy_library_file, warm_up_strategy_library_pkl, warm_up_attack_log_file, warm_up_summarizer_log_file)
 
+    # ✅ If only_warm_up flag is set, exit after warm_up
+    if args.only_warm_up:
+        logger.info("✅ Warm-up phase completed. Exiting (--only_warm_up flag set).")
+        logger.info(f"Warm-up results saved to:")
+        logger.info(f"  - {warm_up_strategy_library_file}")
+        logger.info(f"  - {warm_up_strategy_library_pkl}")
+        logger.info(f"  - {warm_up_attack_log_file}")
+        logger.info(f"  - {warm_up_summarizer_log_file}")
+        exit(0)
+
     lifelong_strategy_library_file = f'./logs/lifelong_strategy_library{suffix}.json'
     lifelong_strategy_library_pkl = f'./logs/lifelong_strategy_library{suffix}.pkl'
     lifelong_attack_log_file = f'./logs/lifelong_attack_log{suffix}.json'
     lifelong_summarizer_log_file = f'./logs/lifelong_summarizer_log{suffix}.json'
 
+    # ✅ If only_lifelong flag is set, run only that specific iteration
+    if args.only_lifelong is not None:
+        iteration_num = args.only_lifelong
+        if iteration_num < 1:
+            logger.error(f"Invalid iteration number: {iteration_num}. Must be >= 1")
+            exit(1)
+        
+        logger.info(f"Running only lifelong iteration {iteration_num} (--only_lifelong {iteration_num})")
+        
+        if iteration_num == 1:
+            # Iteration 1: load from warm_up results
+            if not os.path.exists(warm_up_strategy_library_pkl):
+                logger.error(f"Warm-up results not found at {warm_up_strategy_library_pkl}!")
+                logger.error("Please run warm-up first (use --only_warm_up or run without --only_lifelong)")
+                exit(1)
+            
+            logger.info(f"Loading warm-up results from {warm_up_strategy_library_pkl}")
+            warm_up_strategy_library = pickle.load(open(warm_up_strategy_library_pkl, 'rb'))
+            warm_up_attack_log = json.load(open(warm_up_attack_log_file, 'r'))
+            warm_up_summarizer_log = json.load(open(warm_up_summarizer_log_file, 'r'))
+            
+            lifelong_strategy_library, lifelong_attack_log, lifelong_summarizer_log = autodan_turbo_pipeline.lifelong_redteaming(
+                warm_up_strategy_library, warm_up_attack_log, warm_up_summarizer_log
+            )
+        else:
+            # Iteration 2+: load from previous lifelong iteration
+            prev_library_file = lifelong_strategy_library_pkl
+            prev_attack_log_file = lifelong_attack_log_file
+            prev_summarizer_log_file = lifelong_summarizer_log_file
+            
+            if not os.path.exists(prev_library_file):
+                logger.error(f"Previous lifelong iteration results not found at {prev_library_file}!")
+                logger.error(f"Please run iteration {iteration_num - 1} first")
+                exit(1)
+            
+            logger.info(f"Loading previous lifelong iteration results from {prev_library_file}")
+            lifelong_strategy_library = pickle.load(open(prev_library_file, 'rb'))
+            lifelong_attack_log = json.load(open(prev_attack_log_file, 'r'))
+            lifelong_summarizer_log = json.load(open(prev_summarizer_log_file, 'r'))
+            
+            lifelong_strategy_library, lifelong_attack_log, lifelong_summarizer_log = autodan_turbo_pipeline.lifelong_redteaming(
+                lifelong_strategy_library, lifelong_attack_log, lifelong_summarizer_log
+            )
+        
+        save_data(lifelong_strategy_library, lifelong_attack_log, lifelong_summarizer_log, 
+                 lifelong_strategy_library_file, lifelong_strategy_library_pkl, 
+                 lifelong_attack_log_file, lifelong_summarizer_log_file)
+        logger.info(f"✅ Lifelong iteration {iteration_num} completed. Results saved to:")
+        logger.info(f"  - {lifelong_strategy_library_file}")
+        logger.info(f"  - {lifelong_strategy_library_pkl}")
+        logger.info(f"  - {lifelong_attack_log_file}")
+        logger.info(f"  - {lifelong_summarizer_log_file}")
+        exit(0)
+
+    # ✅ Normal mode: run all lifelong iterations (backward compatible)
     for i in range(args.lifelong_iterations):
         if i == 0:
             lifelong_strategy_library, lifelong_attack_log, lifelong_summarizer_log = autodan_turbo_pipeline.lifelong_redteaming(warm_up_strategy_library, warm_up_attack_log, warm_up_summarizer_log)

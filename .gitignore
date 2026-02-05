@@ -213,3 +213,6 @@ wandb
 model_ckpt/
 models/
 harmbench-mistral-7b-q8_0.gguf
+
+/logs
+*.json 

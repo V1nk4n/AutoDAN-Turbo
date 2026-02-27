@@ -445,6 +445,8 @@ class AutoDANTurbo:
         self.test_library = Library(library=input_strategy_library, logger=self.logger)
         prev_target_response = "Sorry, I cannot help you with that."
         final_target_response = prev_target_response
+        # Ensure target_response is always defined before the loop to avoid UnboundLocalError
+        target_response = prev_target_response
         final_classifier_response = ""
         final_is_harmful = False
 

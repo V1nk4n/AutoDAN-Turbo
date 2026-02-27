@@ -229,6 +229,7 @@ if __name__ == "__main__":
         break_score=args.break_score,
         warm_up_iterations=1,
         lifelong_iterations=1,
+        log_every=args.log_every,
     )
 
     # Initialize HarmBench classifier if requested
@@ -310,3 +311,4 @@ if __name__ == "__main__":
             json.dump(report, f, ensure_ascii=False, indent=2)
         logger.info(f"Saved eval report to {args.save_json}")
 
+ 

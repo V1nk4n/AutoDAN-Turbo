@@ -56,6 +56,12 @@ def config():
     config.add_argument("--only_lifelong", type=int, default=None,
                        help="Only run a specific lifelong iteration (1-indexed, e.g., --only_lifelong 1 for first iteration). Requires warm_up results for iteration 1, or previous lifelong results for iteration > 1.")
     
+    config.add_argument("--tts_num_candidates", type=int, default=8, help="Number of candidates to generate for TTS")
+    config.add_argument("--tts_enabled", action='store_true', help="Enable TTS")
+
+    config.add_argument("--target_batch_size", type=int, default=2, help="Batch size for target model")
+    config.add_argument("--scorer_batch_size", type=int, default=2, help="Batch size for scorer model")
+
     return config
 
 
@@ -259,7 +265,11 @@ if __name__ == '__main__':
                                           epochs=epcohs,
                                           warm_up_iterations=warm_up_iterations,
                                           lifelong_iterations=1,
-                                          log_every=args.log_every)
+                                          log_every=args.log_every,
+                                          tts_enabled=args.tts_enabled,
+                                          tts_num_candidates=args.tts_num_candidates,
+                                          target_batch_size=args.target_batch_size,
+                                          scorer_batch_size=args.scorer_batch_size)
     # We placed the iterations afterward to ensure the program saves the running results after each iteration. Alternatively, you can set lifelong_iterations using args.lifelong_iterations.
 
     if args.debug:

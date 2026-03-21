@@ -1,8 +1,10 @@
+from email import message
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
 import os
 import json
 from huggingface_hub import snapshot_download
+from typing import List
 
 class HuggingFaceModel:
     def __init__(self, repo_name: str, config_dir: str, config_name: str, token=None, use_quantization=False, quantization_type="4bit"):
@@ -276,3 +278,41 @@ class HuggingFaceModel:
         response_ids = outputs[0][response_start:]
         response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
         return response
+
+    def generate_batch(self, systems, users, max_length: int = 1000, **kwargs) -> List[str]:
+
+        if len(systems) != len(users):
+            raise ValueError(f"systems and users must have same length, got {len(systems)} and {len(users)}")
+        if len(users) == 0:
+            return []
+
+        plain_texts = []
+        for system, user in zip(systems, users):
+            messages = [
+                {'role': 'system', 'content': f'{system}'},
+                {'role': 'user', 'content': f'{user}'},
+            ]
+            plain_texts.append(self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
+
+        inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
+
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+        prompt_lens = inputs["attention_mask"].sum(dim=1)
+
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=min(max_length, 4096),
+            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            **kwargs,
+        )
+
+        responses = []
+        for i in range(outputs.shape[0]):
+            start = int(prompt_lens[i].item())
+            response_ids = outputs[i][start:]
+            response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+            responses.append(response)
+        
+        return responses

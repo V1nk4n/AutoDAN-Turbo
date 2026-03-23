@@ -3,6 +3,7 @@ import json
 import wandb
 from typing import Any, Dict, List, Optional, Tuple
 from framework.harmbench_classifier import HarmBenchClassifier
+import time
 
 
 class AutoDANTurbo:
@@ -65,19 +66,25 @@ class AutoDANTurbo:
                 jailbreak_prompt_i = request
                 target_response_i = "Sorry, I cannot help you with that."
             current_library = self.building_library.all()
-            not_scussed = True
-            while not_scussed:
-                try:
-                    strategy, summarizer_system = self.summarizer.summarize(request, jailbreak_prompt_i, jailbreak_prompt_j, current_library, max_length=self.MAX_LENGTH_SUMMARIZER, do_sample=True, temperature=0.6, top_p=0.9)
-                    json_formatted_strategy = self.summarizer.wrapper(strategy, max_length=self.MAX_LENGTH_WRAPPER, do_sample=True, temperature=0.6, top_p=0.9)
-                    jailbreak_strategy = json.loads(json_formatted_strategy)
-                    # Validate that required keys exist
-                    if "Strategy" not in jailbreak_strategy or "Definition" not in jailbreak_strategy:
-                        raise ValueError(f"Missing required keys in strategy JSON. Got keys: {list(jailbreak_strategy.keys())}")
-                    not_scussed = False
-                except Exception as e:
-                    self.logger.error(f"Summarizer failed to summarize the strategy: {e}")
-                    continue
+            def _summarize_from_log_once():
+                strategy, summarizer_system = self.summarizer.summarize(request, jailbreak_prompt_i, jailbreak_prompt_j, current_library, max_length=self.MAX_LENGTH_SUMMARIZER, do_sample=True, temperature=0.6, top_p=0.9)
+                json_formatted_strategy = self.summarizer.wrapper(strategy, max_length=self.MAX_LENGTH_WRAPPER, do_sample=True, temperature=0.6, top_p=0.9)
+                jailbreak_strategy = json.loads(json_formatted_strategy)
+                if "Strategy" not in jailbreak_strategy or "Definition" not in jailbreak_strategy:
+                    raise ValueError(f"Missing required keys in strategy JSON. Got keys: {list(jailbreak_strategy.keys())}")
+                return strategy, summarizer_system, json_formatted_strategy, jailbreak_strategy
+            
+            try:
+                strategy, summarizer_system, json_formatted_strategy, jailbreak_strategy = self._run_with_retries(
+                    _summarize_from_log_once,
+                    op_name="summarize from log",
+                    max_retries=3,
+                    backoff_seconds=0.8,
+                )
+            except RuntimeError as e:
+                self.logger.error(f"Failed to summarize from log: {e}")
+                continue
+
             jailbreak_strategy["Example"] = [jailbreak_prompt_j]
             jailbreak_strategy["Score"] = [score_j - score_i]
             jailbreak_strategy["Embeddings"] = [self.retrival.embed(target_response_i)]
@@ -113,24 +120,26 @@ class AutoDANTurbo:
         self.warm_up_log = Log(entries=input_attack_log)
         self.warm_up_running = 0
         self.warm_up_running += len(self.warm_up_log.all())
-
-    def _best_of_n_prompts(self, request: str, generate_once, n: int):
+    
+    def _tts_pick_best_from_attacker_outputs(self, request: str, raw_prompts: List[str], attacker_systems: List[str],) -> Dict[str, Any]:
+        if len(raw_prompts) != len(attacker_systems):
+            raise ValueError("raw_prompts and attacker_systems must have the same length")
+        cleaned_prompts = [request if any(word in prompt for word in self.refusal_list) else prompt for prompt in raw_prompts]
+        prompt_items = [
+            {"prompt": prompt, "attacker_system": attacker_system}
+            for prompt, attacker_system in zip(cleaned_prompts, attacker_systems)
+        ]
+        target_responses = self.target.respond_batch(
+            prompt_items, batch_size=self.target_batch_size
+        )
+        assessments, scorer_systems = self.scorer.scoring_batch(
+            request, target_responses, batch_size=self.scorer_batch_size, do_sample=True, temperature=0.7, top_p=0.9, max_length=self.MAX_LENGTH_SCORER
+        )
+        scores = self.scorer.wrapper_batch(
+            assessments, batch_size=self.scorer_batch_size, do_sample=False, temperature=0.7, top_p=0.9, max_length=self.MAX_LENGTH_WRAPPER
+        )
         candidates = []
-        prompts = []
-        
-        for _ in range(n):
-            prompt, attacker_system = generate_once()
-            for word in self.refusal_list:
-                if word in prompt:
-                    prompt = request
-                    break
-            prompts.append({"prompt": prompt, "attacker_system": attacker_system})
-
-        target_responses = self.target.respond_batch(prompts, batch_size=self.target_batch_size)
-        assessments, scorer_systems = self.scorer.scoring_batch(request, target_responses, batch_size=self.scorer_batch_size, do_sample=True, temperature=0.7, top_p=0.9, max_length=self.MAX_LENGTH_SCORER)
-        scores = self.scorer.wrapper_batch(assessments, batch_size=self.scorer_batch_size, do_sample=False, temperature=0.7, top_p=0.9, max_length=self.MAX_LENGTH_WRAPPER)
-        
-        for prompt_item, target_response, score, assessment, scorer_system in zip(prompts, target_responses, scores, assessments, scorer_systems):
+        for prompt_item, target_response, score, assessment, scorer_system in zip(prompt_items, target_responses, scores, assessments, scorer_systems):
             candidates.append({
                 "prompt": prompt_item["prompt"],
                 "attacker_system": prompt_item["attacker_system"],
@@ -139,8 +148,24 @@ class AutoDANTurbo:
                 "assessment": assessment,
                 "scorer_system": scorer_system,
             })
-        best_candidate = max(candidates, key=lambda x: x["score"])
-        return best_candidate
+        return max(candidates, key=lambda x: x["score"])
+
+    def _best_of_n_prompts(self, request: str, generate_once, n: int, use_warm_up_attack_batch: bool = False):
+        raw_prompts = []
+        attacker_systems = []
+        if use_warm_up_attack_batch:
+            raw_prompts, attacker_systems = self.attacker.warm_up_attack_batch([request]*n, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
+            return self._tts_pick_best_from_attacker_outputs(request, raw_prompts, attacker_systems)
+        else:
+            for _ in range(n):
+                prompt, attacker_system = generate_once()
+                for word in self.refusal_list:
+                    if word in prompt:
+                        prompt = request
+                        break
+                raw_prompts.append(prompt)
+                attacker_systems.append(attacker_system)
+            return self._tts_pick_best_from_attacker_outputs(request, raw_prompts, attacker_systems)
 
     def warm_up(self, input_strategy_library, input_attack_log, input_summarizer_log):
         wandb.config.update({"stage": "warm_up"})
@@ -159,22 +184,13 @@ class AutoDANTurbo:
                             if word in jailbreak_prompt:
                                 jailbreak_prompt = request
                         target_response = self.target.respond(jailbreak_prompt)
-                        not_scussed = True
-                        while not_scussed:
-                            try:
-                                assessment, scorer_system = self.scorer.scoring(request, target_response, max_length=self.MAX_LENGTH_SCORER, do_sample=True, temperature=0.7, top_p=0.9)
-                                not_scussed_sub = True
-                                while not_scussed_sub:
-                                    try:
-                                        score = self.scorer.wrapper(assessment, max_length=self.MAX_LENGTH_WRAPPER, do_sample=False)
-                                        not_scussed_sub = False
-                                    except Exception as e:
-                                        self.logger.error(f"Scorer wrapper failed to wrap the assessment: {e}")
-                                        continue
-                                not_scussed = False
-                            except Exception as e:
-                                self.logger.error(f"Scorer failed to score the response: {e}")
-                                continue
+                        scored = self._score_target_response_or_none(request, target_response)
+                        if scored is None:
+                            score = 1.0
+                            assessment = ""
+                            scorer_system = ""
+                        else:
+                            score, assessment, scorer_system = scored
                         self.warm_up_log.add(
                             request=request,
                             prompt=jailbreak_prompt,
@@ -189,17 +205,22 @@ class AutoDANTurbo:
                             stage="warm_up"
                             )
                     else:
-                        best_candidate = self._best_of_n_prompts(
-                            request, 
-                            generate_once=lambda: self.attacker.warm_up_attack(
-                                request,
-                                max_length=self.MAX_LENGTH_ATTACKER,
-                                do_sample=True,
-                                temperature=1.0,
-                                top_p=1,
-                            ),
-                            n=self.tts_num_candidates
-                        )
+                        try:
+                            best_candidate = self._best_of_n_prompts(
+                                request, 
+                                generate_once=lambda: self.attacker.warm_up_attack(
+                                    request,
+                                    max_length=self.MAX_LENGTH_ATTACKER,
+                                    do_sample=True,
+                                    temperature=1.0,
+                                    top_p=1,
+                                ),
+                                n=self.tts_num_candidates,
+                                use_warm_up_attack_batch=True
+                            )
+                        except Exception as e:
+                            self.logger.error(f"Failed to generate best of n prompts: {e}")
+                            continue
                         jailbreak_prompt = best_candidate["prompt"]
                         target_response = best_candidate["response"]
                         assessment = best_candidate["assessment"]
@@ -276,26 +297,30 @@ class AutoDANTurbo:
                                 if word in jailbreak_prompt:
                                     jailbreak_prompt = request
                             target_response = self.target.respond(jailbreak_prompt)
-                            success = False
-                            while not success:
-                                try:
-                                    assessment, scorer_system = self.scorer.scoring(request, target_response, max_length=self.MAX_LENGTH_SCORER, do_sample=True, temperature=0.7, top_p=0.9)
-                                    score = self.scorer.wrapper(assessment, max_length=self.MAX_LENGTH_WRAPPER, do_sample=False)
-                                    success = True
-                                except Exception as e:
-                                    self.logger.error(f"Scorer failed to score the response, retrying: {e}")
+                            scored = self._score_target_response_or_none(request, target_response)
+                            if scored is None:
+                                score = 1.0
+                                assessment = ""
+                                scorer_system = ""
+                            else:
+                                score, assessment, scorer_system = scored
                         else:
-                            best_candidate = self._best_of_n_prompts(
-                                request,
-                                generate_once=lambda: self.attacker.warm_up_attack(
+                            try:
+                                best_candidate = self._best_of_n_prompts(
                                     request,
-                                    max_length=self.MAX_LENGTH_ATTACKER,
-                                    do_sample=True,
-                                    temperature=1.0,
-                                    top_p=1,
-                                ),
-                                n=self.tts_num_candidates
-                            )
+                                    generate_once=lambda: self.attacker.warm_up_attack(
+                                        request,
+                                        max_length=self.MAX_LENGTH_ATTACKER,
+                                        do_sample=True,
+                                        temperature=1.0,
+                                        top_p=1,
+                                    ),
+                                    n=self.tts_num_candidates,
+                                    use_warm_up_attack_batch=True
+                                )
+                            except Exception as e:
+                                self.logger.error(f"Failed to generate best of n prompts: {e}")
+                                continue
                             jailbreak_prompt = best_candidate["prompt"]
                             target_response = best_candidate["response"]
                             assessment = best_candidate["assessment"]
@@ -304,59 +329,70 @@ class AutoDANTurbo:
                             scorer_system = best_candidate["scorer_system"]
 
                     else:
-                        def generate_once_with_strategy():
-                            current_library = self.lifelong_library.all()
-                            valid, retrival_strategy_list = self.retrival.pop(current_library, prev_target_response)
-                            if retrival_strategy_list:
-                                if valid:
-                                    jailbreak_prompt, attacker_system = self.attacker.use_strategy(request, retrival_strategy_list, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
-                                else:
-                                    jailbreak_prompt, attacker_system = self.attacker.find_new_strategy(request, retrival_strategy_list, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
+                        current_library = self.lifelong_library.all()
+                        valid, retrival_strategy_list = self.retrival.pop(current_library, prev_target_response)
+                        if not self.tts_enabled:
+                            jailbreak_prompt, attacker_system = self.attacker.lifelong_attack(request, valid, retrival_strategy_list, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
+                            for word in self.refusal_list:
+                                if word in jailbreak_prompt:
+                                    jailbreak_prompt = request
+                            target_response = self.target.respond(jailbreak_prompt)
+                            scored = self._score_target_response_or_none(request, target_response)
+                            if scored is None:
+                                score = 1.0
+                                assessment = ""
+                                scorer_system = ""
                             else:
-                                jailbreak_prompt, attacker_system = self.attacker.warm_up_attack(request, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
-                            return jailbreak_prompt, attacker_system
-                        
-                        best_candidate = self._best_of_n_prompts(
-                            request,
-                            generate_once=generate_once_with_strategy,
-                            n=self.tts_num_candidates
-                        )
-                        jailbreak_prompt = best_candidate["prompt"]
-                        target_response = best_candidate["response"]
-                        assessment = best_candidate["assessment"]
-                        score = best_candidate["score"]
-                        attacker_system = best_candidate["attacker_system"]
-                        scorer_system = best_candidate["scorer_system"]
+                                score, assessment, scorer_system = scored
+                        else:
+                            raw_prompts, attacker_systems = self.attacker.lifelong_attack_batch(request, valid, retrival_strategy_list, n=self.tts_num_candidates, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
+                            try:
+                                best_candidate = self._tts_pick_best_from_attacker_outputs(request, raw_prompts, attacker_systems)
+                            except Exception as e:
+                                self.logger.error(f"Failed to pick best from attacker outputs: {e}")
+                                continue
+
+                            jailbreak_prompt = best_candidate["prompt"]
+                            target_response = best_candidate["response"]
+                            assessment = best_candidate["assessment"]
+                            score = best_candidate["score"]
+                            attacker_system = best_candidate["attacker_system"]
+                            scorer_system = best_candidate["scorer_system"]
                     if score > prev_score:
                         current_library = self.lifelong_library.all()
                         self.logger.info("Identified a score improvement, start summarizing strategy")
-                        not_scussed = True
-                        while not_scussed:
-                            try:
+                        try:
+                            def _summarize_once():
                                 strategy, summarizer_system = self.summarizer.summarize(request, prev_jailbreak_prompt, jailbreak_prompt, current_library, max_length=self.MAX_LENGTH_SUMMARIZER, do_sample=True, temperature=0.6, top_p=0.9)
                                 json_formatted_strategy = self.summarizer.wrapper(strategy, max_length=self.MAX_LENGTH_WRAPPER, do_sample=True, temperature=0.6, top_p=0.9)
                                 jailbreak_strategy = json.loads(json_formatted_strategy)
-                                # Validate that required keys exist
                                 if "Strategy" not in jailbreak_strategy or "Definition" not in jailbreak_strategy:
                                     raise ValueError(f"Missing required keys in strategy JSON. Got keys: {list(jailbreak_strategy.keys())}")
-                                not_scussed = False
-                            except Exception as e:
-                                self.logger.error(f"Summarizer failed to summarize the strategy: {e}")
-                                continue
-                        jailbreak_strategy["Example"] = [jailbreak_prompt]
-                        jailbreak_strategy["Score"] = [score - prev_score]
-                        jailbreak_strategy["Embeddings"] = [self.retrival.embed(prev_target_response)]
-                        self.lifelong_library.add(jailbreak_strategy, if_notify=True)
-                        self.lifelong_summarizer_log.add(
-                            request=request,
-                            summarizer=summarizer_system,
-                            weak_prompt=prev_jailbreak_prompt,
-                            strong_prompt=jailbreak_prompt,
-                            strategy=json.dumps(json.loads(json_formatted_strategy), indent=4, ensure_ascii=False),
-                            score_difference=jailbreak_strategy["Score"][0],
-                            stage="lifelong"
-                        )
-                        self.logger.info("End summarizing strategy")
+                                return strategy, summarizer_system, json_formatted_strategy, jailbreak_strategy
+                            strategy, summarizer_system, json_formatted_strategy, jailbreak_strategy = self._run_with_retries(
+                                _summarize_once,
+                                op_name="summarize improved strategy",
+                                max_retries=3,
+                                backoff_seconds=0.8,
+                            )
+                            jailbreak_strategy["Example"] = [jailbreak_prompt]
+                            jailbreak_strategy["Score"] = [score - prev_score]
+                            jailbreak_strategy["Embeddings"] = [self.retrival.embed(prev_target_response)]
+                            self.lifelong_library.add(jailbreak_strategy, if_notify=True)
+                            self.lifelong_summarizer_log.add(
+                                request=request,
+                                summarizer=summarizer_system,
+                                weak_prompt=prev_jailbreak_prompt,
+                                strong_prompt=jailbreak_prompt,
+                                strategy=json.dumps(json.loads(json_formatted_strategy), indent=4, ensure_ascii=False),
+                                score_difference=jailbreak_strategy["Score"][0],
+                                stage="lifelong"
+                            )
+                            self.logger.info("End summarizing strategy")
+                        except RuntimeError as e:
+                            self.logger.error(f"Summarizer failed to summarize the strategy: {e}")
+                        except Exception as e:
+                            self.logger.error(f"Summarizer failed to summarize the strategy: {e}")
                     prev_jailbreak_prompt = jailbreak_prompt
                     prev_target_response = target_response
                     prev_score = score
@@ -419,6 +455,19 @@ class AutoDANTurbo:
         jailbreak_prompt, _, _, _ = self.test_with_details(request, input_strategy_library)
         return jailbreak_prompt
 
+    def _run_with_retries(self, fn, *, op_name: str, max_retries: int = 3, backoff_seconds: float = 0.5):
+        last_exception: Optional[Exception] = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                return fn()
+            except Exception as e:
+                last_exception = e
+                self.logger.error(f"{op_name} failed on attempt {attempt}, retrying: {e}")
+                if attempt < max_retries:
+                    time.sleep(backoff_seconds * (2 ** (attempt - 1)))
+        raise RuntimeError(f"{op_name} failed after {max_retries} attempts: {last_exception}")
+
     def _score_target_response(self, request: str, target_response: str) -> Tuple[float, str, str]:
         """
         Score a target response using the scorer model.
@@ -426,29 +475,25 @@ class AutoDANTurbo:
         Returns:
             score, assessment_text, scorer_system_prompt
         """
-        success = False
-        last_exception: Optional[Exception] = None
-        while not success:
-            try:
-                assessment, scorer_system = self.scorer.scoring(
-                    request,
-                    target_response,
-                    max_length=self.MAX_LENGTH_SCORER,
-                    do_sample=True,
-                    temperature=0.7,
-                    top_p=0.9,
-                )
-                score = self.scorer.wrapper(
-                    assessment,
-                    max_length=self.MAX_LENGTH_WRAPPER,
-                    do_sample=False,
-                )
-                return score, assessment, scorer_system
-            except Exception as e:
-                last_exception = e
-                self.logger.error(f"Scorer failed to score the response, retrying: {e}")
-        # Should never reach here
-        raise RuntimeError(f"Scorer failed unexpectedly: {last_exception}")
+        def _score_once():
+            assessment, scorer_system = self.scorer.scoring(
+                request,
+                target_response,
+                max_length=self.MAX_LENGTH_SCORER,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+            )
+            score = self.scorer.wrapper(assessment, max_length=self.MAX_LENGTH_WRAPPER, do_sample=False)
+            return score, assessment, scorer_system
+        return self._run_with_retries(_score_once, op_name="scoring")
+
+    def _score_target_response_or_none(self, request: str, target_response: str) -> Optional[Tuple[float, str, str]]:
+        try:
+            return self._score_target_response(request, target_response)
+        except Exception as e:
+            self.logger.error(f"Scoring skipped after retries: {e}")
+            return None
 
     def test_with_details(
         self,
@@ -503,10 +548,16 @@ class AutoDANTurbo:
             for word in self.refusal_list:
                 if word in jailbreak_prompt:
                     jailbreak_prompt = request
-                break
+                    break
 
             target_response = self.target.respond(jailbreak_prompt)
-            score, assessment, _ = self._score_target_response(request, target_response)
+            
+            scored = self._score_target_response_or_none(request, target_response)
+            if scored is None:
+                score = 1.0
+                assessment = ""
+            else:
+                score, assessment, _ = scored
 
             final_target_response = target_response
             final_assessment = assessment

@@ -13,7 +13,7 @@ class AutoDANTurbo:
     MAX_LENGTH_WRAPPER = 4096       # Max length for wrapper extraction
     MAX_LENGTH_SUMMARIZER = 8192   # Max length for summarizer generation (increased to handle longer inputs)
     
-    def __init__(self, turbo_framework: dict, data, target, epochs=150, break_score=8.5, warm_up_iterations=1, lifelong_iterations=4, log_every=10, tts_enabled=False, tts_num_candidates: int = 8, target_batch_size: int = 2, scorer_batch_size: int = 2):
+    def __init__(self, turbo_framework: dict, data, target, epochs=150, break_score=8.5, warm_up_iterations=1, lifelong_iterations=4, log_every=10, tts_enabled=False, tts_num_candidates: int = 8, attack_batch_size: int = 2, target_batch_size: int = 2, scorer_batch_size: int = 2):
         self.attacker = turbo_framework['attacker']
         self.scorer = turbo_framework['scorer']
         self.summarizer = turbo_framework['summarizer']
@@ -33,7 +33,8 @@ class AutoDANTurbo:
 
         self.tts_enabled = tts_enabled
         self.tts_num_candidates = tts_num_candidates
-
+        
+        self.attacker.attack_batch_size = attack_batch_size
         self.target_batch_size = target_batch_size
         self.scorer_batch_size = scorer_batch_size
 

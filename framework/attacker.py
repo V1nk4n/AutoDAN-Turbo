@@ -3,7 +3,7 @@ import json
 from typing import List
 
 class Attacker():
-    def __init__(self, model, attack_batch_size: int = 4):
+    def __init__(self, model, attack_batch_size: int = 2):
         self.model = model
         self.attack_batch_size = attack_batch_size
 

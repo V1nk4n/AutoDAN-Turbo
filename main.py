@@ -59,8 +59,10 @@ def config():
     config.add_argument("--tts_num_candidates", type=int, default=8, help="Number of candidates to generate for TTS")
     config.add_argument("--tts_enabled", action='store_true', help="Enable TTS")
 
+    config.add_argument("--attack_batch_size", type=int, default=2, help="Batch size for attack model")
     config.add_argument("--target_batch_size", type=int, default=2, help="Batch size for target model")
     config.add_argument("--scorer_batch_size", type=int, default=2, help="Batch size for scorer model")
+
 
     return config
 
@@ -197,20 +199,22 @@ if __name__ == '__main__':
     # config_name = "llama-3-instruct"
     # repo_name = "meta-llama/Llama-3.2-1B"
     # config_name = "llama-3"
-    scorer_model = HuggingFaceModel(
-        repo_name, 
-        config_dir, 
-        config_name, 
-        hf_token,
-        use_quantization=True,
-        quantization_type="4bit"
-    )
+    # scorer_model = HuggingFaceModel(
+    #     repo_name, 
+    #     config_dir, 
+    #     config_name, 
+    #     hf_token,
+    #     use_quantization=True,
+    #     quantization_type="4bit"
+    # )
+    
     # ✅ Clear cache sau khi load scorer model
-    import torch
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        print("CUDA cache cleared after loading scorer model.")
-    scorer = Scorer(scorer_model)
+    # import torch
+    # if torch.cuda.is_available():
+    #     torch.cuda.empty_cache()
+    #     print("CUDA cache cleared after loading scorer model.")
+    # scorer = Scorer(scorer_model)
+    scorer = Scorer(model)
     # the vLLM cannot support multiple model yet, so here we load the scorer model via huggingface (you can use the same model as the base model, here we use gemma-1.1-7b-it for reproduction)
 
     # Choose embedding model: local or OpenAI
@@ -268,6 +272,7 @@ if __name__ == '__main__':
                                           log_every=args.log_every,
                                           tts_enabled=args.tts_enabled,
                                           tts_num_candidates=args.tts_num_candidates,
+                                          attack_batch_size=args.attack_batch_size,
                                           target_batch_size=args.target_batch_size,
                                           scorer_batch_size=args.scorer_batch_size)
     # We placed the iterations afterward to ensure the program saves the running results after each iteration. Alternatively, you can set lifelong_iterations using args.lifelong_iterations.

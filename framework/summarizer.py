@@ -1,5 +1,120 @@
-import os
+import ast
 import json
+import os
+from typing import Any, Dict, Optional
+
+
+def _strip_markdown_fence(text: str) -> str:
+    t = text.strip()
+    if not t.startswith("```"):
+        return t
+    lines = t.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    while lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _normalize_wrapper_json_string(s: str) -> str:
+    """Undo common wrapper / LLM mistakes before strict JSON parse."""
+    s = _strip_markdown_fence(s)
+    if s.startswith("\ufeff"):
+        s = s[1:]
+    s = s.strip()
+    # Wrapper does return "{" + model_continuation; model sometimes echoes '{' again.
+    while len(s) >= 3 and s.startswith("{{") and s[2] == '"':
+        s = s[1:]
+    return s
+
+
+def _extract_first_json_object(text: str) -> Optional[str]:
+    """First {...} slice where braces ignore {...} inside JSON double-quoted strings."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    i = start
+    in_string = False
+    escape = False
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if not in_string:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+            elif ch == '"':
+                in_string = True
+                escape = False
+        else:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        i += 1
+    return None
+
+
+def _extract_outer_braces(text: str) -> Optional[str]:
+    """Fallback: first '{' through last '}' (works when inner braces only appear inside quoted regions in non-JSON output)."""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    return text[start : end + 1]
+
+
+def parse_strategy_json(raw: str) -> Dict[str, Any]:
+    """
+    Parse summarizer wrapper output into a dict. Tolerates markdown fences, duplicate '{',
+    leading prose, single-quoted Python-ish dicts, and minor formatting issues.
+    """
+    if raw is None:
+        raise ValueError("Empty strategy JSON")
+    s = _normalize_wrapper_json_string(raw)
+
+    attempts: list[str] = []
+    for fragment in (s, _extract_first_json_object(s), _extract_outer_braces(s)):
+        if fragment and fragment not in attempts:
+            attempts.append(fragment)
+
+    def _ensure_strategy_definition_str(d: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(d)
+        if "Strategy" in out:
+            out["Strategy"] = str(out["Strategy"])
+        if "Definition" in out:
+            out["Definition"] = str(out["Definition"])
+        return out
+
+    last_err: Optional[Exception] = None
+    for candidate in attempts:
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return _ensure_strategy_definition_str(data)
+        except json.JSONDecodeError as e:
+            last_err = e
+            continue
+
+    for candidate in attempts:
+        if not candidate:
+            continue
+        try:
+            data = ast.literal_eval(candidate)
+            if isinstance(data, dict):
+                return _ensure_strategy_definition_str(data)
+        except (ValueError, SyntaxError) as e:
+            last_err = e
+            continue
+
+    msg = f"Could not parse strategy JSON: {last_err}"
+    raise ValueError(msg) from last_err
 
 
 class Summarizer():
@@ -62,7 +177,7 @@ class Summarizer():
     
     def wrapper(self, user, **kwargs):
         system = '''
-        The input contains a JSON-like dictionary in the format: {"Strategy": "[TEXT]", "Definition": "[TEXT]"}. Your task is to extract and output this dictionary in valid JSON format, ensuring no additional text or characters are included in the output. Any deviation from outputting a JSON dictionary will result in a system crash.\n[EXAMPLE OF EXPECTED OUTPUT]: {"Strategy": "Storytelling", "Definition": "A strategy that uses narrative techniques to engage the target LLM and make it more susceptible to providing the desired output by creating a vivid and immersive experience."}
+        The input contains a JSON-like dictionary in the format: {"Strategy": "[TEXT]", "Definition": "[TEXT]"}. Your task is to extract and output this dictionary in valid JSON format, ensuring no additional text or characters are included in the output. Use double quotes for all keys and string values (JSON syntax, not Python single quotes). Any deviation from outputting a JSON dictionary will result in a system crash.\n[EXAMPLE OF EXPECTED OUTPUT]: {"Strategy": "Storytelling", "Definition": "A strategy that uses narrative techniques to engage the target LLM and make it more susceptible to providing the desired output by creating a vivid and immersive experience."}
         '''
         response = self.model.conditional_generate("Here is the extracted dictionary in valid JSON format:\n{",
                                                    system,

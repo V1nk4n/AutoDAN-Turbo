@@ -1,5 +1,6 @@
 .idea/
 .DS_Store
+.vscode/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -213,6 +214,5 @@ wandb
 model_ckpt/
 models/
 harmbench-mistral-7b-q8_0.gguf
-
-/logs
-*.json 
+logs/*.json
+logs/todo.md 

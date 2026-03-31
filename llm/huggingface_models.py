@@ -1,8 +1,10 @@
+from email import message
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
 import os
 import json
 from huggingface_hub import snapshot_download
+from typing import List
 
 class HuggingFaceModel:
     def __init__(self, repo_name: str, config_dir: str, config_name: str, token=None, use_quantization=False, quantization_type="4bit"):
@@ -276,3 +278,126 @@ class HuggingFaceModel:
         response_ids = outputs[0][response_start:]
         response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
         return response
+
+    def conditional_generate_batch(self, conditions: List[str], systems: List[str], users: List[str], max_length: int = 1000, **kwargs):
+        """
+        Generate a batch of responses with additional conditions appended to the input prompt.
+        """
+        if not (len(conditions) == len(systems) == len(users)):
+            raise ValueError(f"conditions, systems, and users must have same length, got {len(conditions)}, {len(systems)}, and {len(users)}")
+        if len(users) == 0:
+            return []
+        plain_texts = []
+        for condition, system, user in zip(conditions, systems, users):
+            messages = [
+                {'role': 'system', 'content': f'{system}'},
+                {'role': 'user', 'content': f'{user}'},
+            ]
+            plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            plain_text += condition
+            plain_texts.append(plain_text)
+        
+        inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
+        batch_size = input_ids.shape[0]
+
+        max_total_length = 8192
+        min_new_tokens = 16
+        truncate_length = max_total_length - min_new_tokens
+        max_new_tokens = min(max_length, 4096)
+
+        row_id_lists = []
+        row_truncated = []
+
+        for i in range(batch_size):
+            input_len = int(attention_mask[i].sum().item())
+            ids = input_ids[i, :input_len].detach().cpu()
+            if input_len >= max_total_length:
+                ids = ids[-truncate_length:]
+                row_truncated.append(True)
+            else:
+                row_truncated.append(False)
+            row_id_lists.append(ids.tolist())
+        
+        padded = self.tokenizer.pad(
+            {"input_ids": row_id_lists},
+            return_tensors="pt",
+            padding=True,
+        )
+
+        padded = {k: v.to(self.model.device) for k, v in padded.items()}
+
+        min_new_tokens_list = []
+        for ids_list, truncated in zip(row_id_lists, row_truncated):
+            len_ids = len(ids_list)
+            if truncated:
+                m_i = min_new_tokens
+            else:
+                m_i = max_new_tokens
+                if len_ids + m_i > max_total_length:
+                    m_i = max_total_length - len_ids
+            if m_i <= 0:
+                m_i = min_new_tokens
+            min_new_tokens_list.append(m_i)
+
+        max_new_tokens = min(min_new_tokens_list)
+
+        gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
+
+        outputs = self.model.generate(
+            **padded,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            **gen_kwargs,
+        )
+        input_length = padded["input_ids"].shape[-1]
+
+        responses = []
+        for i in range(outputs.shape[0]):
+            response_ids = outputs[i][input_length:]
+            response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+            responses.append(response)
+        
+        return responses
+
+    def generate_batch(self, systems, users, max_length: int = 1000, **kwargs) -> List[str]:
+
+        if len(systems) != len(users):
+            raise ValueError(f"systems and users must have same length, got {len(systems)} and {len(users)}")
+        if len(users) == 0:
+            return []
+
+        plain_texts = []
+        for system, user in zip(systems, users):
+            messages = [
+                {'role': 'system', 'content': f'{system}'},
+                {'role': 'user', 'content': f'{user}'},
+            ]
+            plain_texts.append(self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
+
+        inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
+
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+        prompt_lens = inputs["attention_mask"].sum(dim=1)
+
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=min(max_length, 4096),
+            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            **kwargs,
+        )
+
+        responses = []
+        for i in range(outputs.shape[0]):
+            start = int(prompt_lens[i].item())
+            response_ids = outputs[i][start:]
+            response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+            responses.append(response)
+        
+        return responses

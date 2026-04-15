@@ -19,7 +19,7 @@ class Target():
         responses = []
         for start in range(0, len(prompts), batch_size):
             chunk = prompts[start:start+batch_size]
-            systems = [p.get("attacker_system", default_system) for p in chunk]
+            systems = [default_system] * len(chunk)
             users = [p["prompt"] for p in chunk]
             chunk_responses = self.model.generate_batch(systems, users, max_length=max_new_tokens, do_sample=True, temperature=0.6, top_p=0.9)
             responses.extend(chunk_responses)

@@ -1,15 +1,14 @@
-from framework import Attacker, Scorer, Summarizer, Retrieval, Target
+from framework import Attacker, Scorer, Summarizer, Retrieval, Target, Feedback, Refiner, PatternManager
 from framework.harmbench_classifier import HarmBenchClassifier
 from llm import HuggingFaceModel, OpenAIEmbeddingModel
 import argparse
 import json
 import logging
 import os
-import pickle
 import datetime
 import wandb
 
-from pipeline import AutoDANTurbo
+from pipeline_pro import AutoDANTurboPro
 
 
 def config():
@@ -27,8 +26,15 @@ def config():
         help="Which split inside the JSON to evaluate on",
     )
 
-    # Strategy library to evaluate (pkl produced by main.py)
-    parser.add_argument("--strategy_library_pkl", type=str, default="./logs/lifelong_strategy_library.pkl")
+    parser.add_argument("--pro_turns_max", type=int, default=6)
+    parser.add_argument("--pro_n_candidates", type=int, default=4)
+    parser.add_argument("--pro_top_k", type=int, default=2)
+    parser.add_argument("--pro_score_threshold", type=float, default=0.5)
+    parser.add_argument("--target_max_new_tokens", type=int, default=150)
+    parser.add_argument("--nll_min", type=float, default=0.0)
+    parser.add_argument("--nll_max", type=float, default=10.0)
+    parser.add_argument("--pattern_force_seed", action="store_true", help="Force seed for pattern manager")
+    parser.add_argument("--pattern_frozen", action="store_true", help="Freeze pattern manager")
 
     # Evaluation params
     parser.add_argument("--epochs", type=int, default=150)
@@ -109,27 +115,29 @@ def load_eval_requests(path: str, split: str):
         return data
     raise ValueError(f"Unsupported dataset format in {path}. Expected dict with key '{split}' or list[str].")
 
-
-if __name__ == "__main__":
+def setup_logger():
     log_dir = os.path.join(os.getcwd(), "logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "eval.log")
-
-    logger = logging.getLogger("EvalLogger")
+    log_file = os.path.join(log_dir, "eval_pro.log")
+    logger = logging.getLogger("EvalProLogger")
     logger.setLevel(logging.DEBUG)
-
+    logger.handlers.clear()
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.INFO)
     file_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     file_handler.setFormatter(file_formatter)
-
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.DEBUG)
     console_formatter = logging.Formatter("%(levelname)s - %(message)s")
     console_handler.setFormatter(console_formatter)
-
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+    return logger, file_formatter
+
+
+if __name__ == "__main__":
+    args = config().parse_args()
+    logger, file_formatter = setup_logger()
 
     utc_now = datetime.datetime.now(datetime.timezone.utc)
     wandb.init(project="AutoDAN-Turbo", name=f"eval-{utc_now}")
@@ -149,15 +157,8 @@ if __name__ == "__main__":
         logger.info(f"✅ Logging to wandb directory: {wandb_log_file}")
     except Exception as e:
         logger.warning(f"⚠️ Failed to setup wandb logging: {e}")
-
-    args = config().parse_args()
-
     # Load evaluation requests
     eval_requests = load_eval_requests(args.data, args.split)
-
-    # Load frozen strategy library
-    with open(args.strategy_library_pkl, "rb") as f:
-        strategy_library = pickle.load(f)
 
     # Build models (keep similar to test.py, but configurable via --model)
     config_dir = args.chat_config
@@ -210,6 +211,9 @@ if __name__ == "__main__":
 
     retrieval = Retrieval(text_embedding_model, logger)
     target = Target(model)
+    feedback = Feedback(model)
+    refiner = Refiner(model)
+    pattern_manager = PatternManager(filepath=os.path.join(os.getcwd(), 'logs', 'pattern_library.json'), force_seed=args.pattern_force_seed, frozen=args.pattern_frozen)
 
     attack_kit = {
         "attacker": attacker,
@@ -217,19 +221,29 @@ if __name__ == "__main__":
         "summarizer": summarizer,
         "retrieval": retrieval,
         "logger": logger,
+        "feedback": feedback,
+        "refiner": refiner,
+        "pattern_manager": pattern_manager,
     }
 
     # data is not used directly for eval, but required by constructor
     dummy_data = {"warm_up": [], "lifelong": []}
-    pipeline = AutoDANTurbo(
+    pipeline = AutoDANTurboPro(
         turbo_framework=attack_kit,
         data=dummy_data,
         target=target,
         epochs=args.epochs,
-        break_score=args.break_score,
         warm_up_iterations=1,
         lifelong_iterations=1,
         log_every=args.log_every,
+        pro_turns_max=args.pro_turns_max,
+        pro_n_candidates=args.pro_n_candidates,
+        pro_top_k=args.pro_top_k,
+        pro_score_threshold=args.pro_score_threshold,
+        target_max_new_tokens=args.target_max_new_tokens,
+        nll_min=args.nll_min,
+        nll_max=args.nll_max,
+        target_model_key=repo_name,
     )
 
     # Initialize HarmBench classifier if requested
@@ -281,7 +295,6 @@ if __name__ == "__main__":
         logger.info("Using HarmBench classifier for evaluation (paper-style)")
         report = pipeline.evaluate_dataset(
             eval_requests,
-            strategy_library,
             max_requests=args.max_requests,
             log_every=args.log_every,
             harmbench_classifier=harmbench_classifier,
@@ -295,8 +308,6 @@ if __name__ == "__main__":
         logger.info("Using LLM scorer for evaluation (original method)")
         report = pipeline.evaluate_dataset(
             eval_requests,
-            strategy_library,
-            break_score=args.break_score,
             max_requests=args.max_requests,
             log_every=args.log_every,
         )

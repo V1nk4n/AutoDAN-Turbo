@@ -3,6 +3,9 @@ from .scorer import Scorer
 from .summarizer import Summarizer
 from .library import Library
 from .log import Log
-from .retrival import Retrieval
+from .retrieval import Retrieval
 from .target import Target
 from .harmbench_classifier import HarmBenchClassifier
+from .feedback import Feedback
+from .refiner import Refiner
+from .pattern_manager import PatternManager

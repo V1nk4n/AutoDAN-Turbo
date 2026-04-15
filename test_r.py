@@ -131,7 +131,7 @@ if __name__ == '__main__':
                                                     openai_api_key=args.openai_api_key,
                                                     embedding_model=args.embedding_model,
                                                     logger=logger)
-    retrival = Retrieval(text_embedding_model, logger)
+    retrieval = Retrieval(text_embedding_model, logger)
 
     data = json.load(open(args.data, 'r'))
 
@@ -144,7 +144,7 @@ if __name__ == '__main__':
         'attacker': attacker,
         'scorer': scorer,
         'summarizer': summarizer,
-        'retrival': retrival,
+        'retrieval': retrieval,
         'logger': logger
     }
     autodan_turbo_pipeline = AutoDANTurbo(turbo_framework=attack_kit,

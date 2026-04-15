@@ -96,6 +96,10 @@ class HuggingFaceModel:
                 self.tokenizer.save_pretrained(model_path)
                 print("Tokenizer re-downloaded and saved.")
             
+            if hasattr(self.tokenizer, "pad_token"):
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            if hasattr(self.tokenizer, "padding_side"):
+                self.tokenizer.padding_side = "left"
             # Load từ local với quantization
             # ✅ Khi dùng quantization, phải force lên GPU (không thể dùng "auto" vì sẽ dispatch lên CPU/disk)
             device_map_value = "cuda:0" if torch.cuda.is_available() and use_quantization else "auto"
@@ -106,6 +110,7 @@ class HuggingFaceModel:
                 quantization_config=quantization_config,
                 torch_dtype=torch_dtype,
             )
+
             
             # ✅ Clear CUDA cache sau khi load để giải phóng memory
             if torch.cuda.is_available():
@@ -175,6 +180,99 @@ class HuggingFaceModel:
         response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
         return response
 
+    def generate_from_messages(self, messages, max_new_tokens, **kwargs):
+        """
+        Generate a response from a list of messages.
+        """
+        plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        inputs = self.tokenizer(plain_text, return_tensors="pt")
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            **kwargs,
+        )
+
+        response_start = inputs["input_ids"].shape[-1]
+        response_ids = outputs[0][response_start:]
+        response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+        return response
+
+    def generate_from_messages_batch(self, batch_messages, max_new_tokens, batch_size=2, **kwargs):
+        """
+        Generate a batch of responses from a list of messages.
+        """
+        plain_texts = []
+        for messages in batch_messages:
+            plain_texts.append(self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
+        inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
+        batch_size = input_ids.shape[0]
+
+        max_total_length = 8192
+        min_new_tokens = 16
+        truncate_length = max_total_length - min_new_tokens
+        max_new_tokens = min(max_new_tokens, 4096)
+
+        row_id_lists = []
+        row_truncated = []
+        for i in range(batch_size):
+            input_len = int(attention_mask[i].sum().item())
+            ids = input_ids[i, :input_len].detach().cpu()
+            if input_len >= max_total_length:
+                ids = ids[-truncate_length:]
+                row_truncated.append(True)
+            else:
+                row_truncated.append(False)
+            row_id_lists.append(ids.tolist())
+        
+        padded = self.tokenizer.pad(
+            {"input_ids": row_id_lists},
+            return_tensors="pt",
+            padding=True,
+        )
+        padded = {k: v.to(self.model.device) for k, v in padded.items()}
+
+        min_new_tokens_list = []
+        for ids_list, truncated in zip(row_id_lists, row_truncated):
+            len_ids = len(ids_list)
+            if truncated:
+                m_i = min_new_tokens
+            else:
+                m_i = max_new_tokens
+                if len_ids + m_i > max_total_length:
+                    m_i = max_total_length - len_ids
+            if m_i <= 0:
+                m_i = min_new_tokens
+            min_new_tokens_list.append(m_i)
+
+        max_new_tokens = min(min_new_tokens_list)
+
+        gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
+
+        outputs = self.model.generate(
+            **padded,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            **gen_kwargs,
+        )
+        input_length = padded["input_ids"].shape[-1]
+
+        responses = []
+        for i in range(outputs.shape[0]):
+            response_ids = outputs[i][input_length:]
+            response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+            responses.append(response)
+        return responses
+    
     def continue_generate(self, system: str, user1: str, assistant1: str, user2: str, max_length: int = 1000, **kwargs):
         """
         Continue a conversation and generate a response.
@@ -401,3 +499,27 @@ class HuggingFaceModel:
             responses.append(response)
         
         return responses
+
+    def get_negative_log_likelihood(self, user_instruction: str, target_string: str):
+        messages = [
+            {'role': "system", "content": "You are a helpful assistant."},
+            {'role': "user", "content": user_instruction},
+        ]
+        prompt_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        prompt_ids = self.tokenizer.encode(prompt_text, return_tensors="pt")
+        target_ids = self.tokenizer.encode(target_string, add_special_tokens=False, return_tensors="pt")
+        input_ids = torch.cat([prompt_ids, target_ids], dim=1).to(self.model.device)
+        attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)
+
+        labels = input_ids.clone()
+        prompt_length = prompt_ids.shape[1]
+        labels[:, :prompt_length] = -100
+
+        self.model.eval()
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            
+        if outputs.loss is None:
+            raise RuntimeError("Model returned no loss; check that labels has non-ignored positions.")
+        
+        return float(outputs.loss.item())

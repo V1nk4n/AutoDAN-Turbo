@@ -1,4 +1,4 @@
-from framework import Attacker, Scorer, Summarizer, Retrieval, Target
+from framework import Attacker, Scorer, Summarizer, Retrieval, Target, Feedback, Refiner, PatternManager
 from framework_r import Attacker_r, Scorer_r, Summarizer_r
 # from llm import HuggingFaceModel, VLLMModel, OpenAIEmbeddingModel, DeepSeekModel
 from llm import HuggingFaceModel, OpenAIEmbeddingModel, DeepSeekModel
@@ -6,6 +6,7 @@ import argparse
 import logging
 import os
 from pipeline import AutoDANTurbo
+from pipeline_pro import AutoDANTurboPro
 import wandb
 import datetime
 import numpy as np
@@ -63,6 +64,15 @@ def config():
     config.add_argument("--target_batch_size", type=int, default=2, help="Batch size for target model")
     config.add_argument("--scorer_batch_size", type=int, default=2, help="Batch size for scorer model")
 
+    config.add_argument("--pro_enabled", action='store_true', help="Enable PRO")
+    config.add_argument("--pro_turns_max", type=int, default=6, help="Maximum number of turns for PRO")
+    config.add_argument("--pro_n_candidates", type=int, default=4, help="Number of candidates for PRO")
+    config.add_argument("--pro_top_k", type=int, default=2, help="Top k candidates for PRO")
+    config.add_argument("--pro_score_threshold", type=float, default=0.5, help="Score threshold for PRO")
+    config.add_argument("--target_max_new_tokens", type=int, default=150, help="Maximum number of new tokens for target model")
+    config.add_argument("--pattern_force_seed", action="store_true", help="Force seed for pattern manager")
+    config.add_argument("--pattern_frozen", action="store_true", help="Freeze pattern manager")
+    config.add_argument("--pattern_filepath", type=str, default="./logs/pattern_library.json", help="Path to pattern library")
 
     return config
 
@@ -214,7 +224,13 @@ if __name__ == '__main__':
     #     torch.cuda.empty_cache()
     #     print("CUDA cache cleared after loading scorer model.")
     # scorer = Scorer(scorer_model)
-    scorer = Scorer(model)
+
+    x_model_repo_name = "Qwen/Qwen3-0.6B"
+    x_model_config_name = "Qwen3-0.6B"
+    x_model = HuggingFaceModel(x_model_repo_name, config_dir, x_model_config_name, hf_token)
+    scorer = Scorer(model, x_model)
+    feedback = Feedback(model)
+    refiner = Refiner(model)
     # the vLLM cannot support multiple model yet, so here we load the scorer model via huggingface (you can use the same model as the base model, here we use gemma-1.1-7b-it for reproduction)
 
     # Choose embedding model: local or OpenAI
@@ -237,7 +253,7 @@ if __name__ == '__main__':
                                                     openai_api_key=args.openai_api_key,
                                                     embedding_model=args.embedding_model,
                                                     logger=logger)
-    retrival = Retrieval(text_embedding_model, logger)
+    retrieval = Retrieval(text_embedding_model, logger)
 
     if args.debug:
         data = {'warm_up': [
@@ -255,26 +271,45 @@ if __name__ == '__main__':
     target = Target(model)
     # configure your own target model here
 
+    pattern_manager = PatternManager(filepath=args.pattern_filepath, force_seed=args.pattern_force_seed, frozen=args.pattern_frozen)
     init_library, init_attack_log, init_summarizer_log = {}, [], []
     attack_kit = {
         'attacker': attacker,
         'scorer': scorer,
         'summarizer': summarizer,
-        'retrival': retrival,
-        'logger': logger
+        'retrieval': retrieval,
+        'logger': logger,
+        'feedback': feedback,
+        'refiner': refiner,
+        'pattern_manager': pattern_manager
     }
-    autodan_turbo_pipeline = AutoDANTurbo(turbo_framework=attack_kit,
-                                          data=data,
-                                          target=target,
-                                          epochs=epcohs,
-                                          warm_up_iterations=warm_up_iterations,
-                                          lifelong_iterations=1,
-                                          log_every=args.log_every,
-                                          tts_enabled=args.tts_enabled,
-                                          tts_num_candidates=args.tts_num_candidates,
-                                          attack_batch_size=args.attack_batch_size,
-                                          target_batch_size=args.target_batch_size,
-                                          scorer_batch_size=args.scorer_batch_size)
+    if args.pro_enabled:
+        autodan_turbo_pipeline = AutoDANTurboPro(turbo_framework=attack_kit,
+                                                data=data,
+                                                target=target,
+                                                epochs=epcohs,
+                                                warm_up_iterations=warm_up_iterations,
+                                                lifelong_iterations=1,
+                                                log_every=args.log_every,
+                                                pro_turns_max=args.pro_turns_max,
+                                                pro_n_candidates=args.pro_n_candidates,
+                                                pro_top_k=args.pro_top_k,
+                                                pro_score_threshold=args.pro_score_threshold,
+                                                target_max_new_tokens=args.target_max_new_tokens,
+                                                target_model_key=repo_name)
+    else:
+        autodan_turbo_pipeline = AutoDANTurbo(turbo_framework=attack_kit,
+                                            data=data,
+                                            target=target,
+                                            epochs=epcohs,
+                                            warm_up_iterations=warm_up_iterations,
+                                            lifelong_iterations=1,
+                                            log_every=args.log_every,
+                                            tts_enabled=args.tts_enabled,
+                                            tts_num_candidates=args.tts_num_candidates,
+                                            attack_batch_size=args.attack_batch_size,
+                                            target_batch_size=args.target_batch_size,
+                                            scorer_batch_size=args.scorer_batch_size)
     # We placed the iterations afterward to ensure the program saves the running results after each iteration. Alternatively, you can set lifelong_iterations using args.lifelong_iterations.
 
     if args.debug:

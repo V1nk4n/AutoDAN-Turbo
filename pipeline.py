@@ -17,7 +17,7 @@ class AutoDANTurbo:
         self.attacker = turbo_framework['attacker']
         self.scorer = turbo_framework['scorer']
         self.summarizer = turbo_framework['summarizer']
-        self.retrival = turbo_framework['retrival']
+        self.retrieval = turbo_framework['retrieval']
         self.logger = turbo_framework['logger']
 
         self.data = data
@@ -88,7 +88,7 @@ class AutoDANTurbo:
 
             jailbreak_strategy["Example"] = [jailbreak_prompt_j]
             jailbreak_strategy["Score"] = [score_j - score_i]
-            jailbreak_strategy["Embeddings"] = [self.retrival.embed(target_response_i)]
+            jailbreak_strategy["Embeddings"] = [self.retrieval.embed(target_response_i)]
             self.building_library.add(jailbreak_strategy, if_notify=True)
             self.warm_up_summarizer_log.add(
                 request=request,
@@ -290,7 +290,7 @@ class AutoDANTurbo:
                 prev_jailbreak_prompt = request
                 prev_target_response = "Sorry, I cannot help you with that."
                 for j in range(self.epochs):
-                    retrival_strategy_list = []
+                    retrieval_strategy_list = []
                     if j == 0:
                         if not self.tts_enabled:
                             jailbreak_prompt, attacker_system = self.attacker.warm_up_attack(request, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
@@ -331,9 +331,9 @@ class AutoDANTurbo:
 
                     else:
                         current_library = self.lifelong_library.all()
-                        valid, retrival_strategy_list = self.retrival.pop(current_library, prev_target_response)
+                        valid, retrieval_strategy_list = self.retrieval.pop(current_library, prev_target_response)
                         if not self.tts_enabled:
-                            jailbreak_prompt, attacker_system = self.attacker.lifelong_attack(request, valid, retrival_strategy_list, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
+                            jailbreak_prompt, attacker_system = self.attacker.lifelong_attack(request, valid, retrieval_strategy_list, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
                             for word in self.refusal_list:
                                 if word in jailbreak_prompt:
                                     jailbreak_prompt = request
@@ -346,7 +346,7 @@ class AutoDANTurbo:
                             else:
                                 score, assessment, scorer_system = scored
                         else:
-                            raw_prompts, attacker_systems = self.attacker.lifelong_attack_batch(request, valid, retrival_strategy_list, n=self.tts_num_candidates, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
+                            raw_prompts, attacker_systems = self.attacker.lifelong_attack_batch(request, valid, retrieval_strategy_list, n=self.tts_num_candidates, max_length=self.MAX_LENGTH_ATTACKER, do_sample=True, temperature=1.0, top_p=1)
                             try:
                                 best_candidate = self._tts_pick_best_from_attacker_outputs(request, raw_prompts, attacker_systems)
                             except Exception as e:
@@ -378,7 +378,7 @@ class AutoDANTurbo:
                             )
                             jailbreak_strategy["Example"] = [jailbreak_prompt]
                             jailbreak_strategy["Score"] = [score - prev_score]
-                            jailbreak_strategy["Embeddings"] = [self.retrival.embed(prev_target_response)]
+                            jailbreak_strategy["Embeddings"] = [self.retrieval.embed(prev_target_response)]
                             self.lifelong_library.add(jailbreak_strategy, if_notify=True)
                             self.lifelong_summarizer_log.add(
                                 request=request,
@@ -403,7 +403,7 @@ class AutoDANTurbo:
                         response=target_response,
                         assessment=assessment,
                         score=score,
-                        retrival_strategy=json.dumps(retrival_strategy_list, indent=4, ensure_ascii=False),
+                        retrieval_strategy=json.dumps(retrieval_strategy_list, indent=4, ensure_ascii=False),
                         attacker=attacker_system,
                         scorer=scorer_system,
                         iteration=i,
@@ -422,7 +422,7 @@ class AutoDANTurbo:
                     if should_log_detail:
                         self.logger.info(f"Request ID: {request_id}, Iteration: {i}, Epoch: {j}, Score: {score}")
                         self.logger.info(f"Request: {request}")
-                        self.logger.info(f"Strategy: {json.dumps(retrival_strategy_list, indent=4, ensure_ascii=False)}")
+                        self.logger.info(f"Strategy: {json.dumps(retrieval_strategy_list, indent=4, ensure_ascii=False)}")
                         self.logger.info(f"Prompt: {jailbreak_prompt}")
                         self.logger.info(f"Response: {target_response}")
                         self.logger.info(f"Assessment: {assessment}")
@@ -525,11 +525,11 @@ class AutoDANTurbo:
                 )
             else:
                 current_library = self.test_library.all()
-                valid, retrival_strategy_list = self.retrival.pop(current_library, prev_target_response)
+                valid, retrieval_strategy_list = self.retrieval.pop(current_library, prev_target_response)
                 if valid:
                     jailbreak_prompt, _ = self.attacker.use_strategy(
                         request,
-                        retrival_strategy_list,
+                        retrieval_strategy_list,
                         max_length=self.MAX_LENGTH_ATTACKER,
                         do_sample=True,
                         temperature=1.0,
@@ -538,7 +538,7 @@ class AutoDANTurbo:
                 else:
                     jailbreak_prompt, _ = self.attacker.find_new_strategy(
                         request,
-                        retrival_strategy_list,
+                        retrieval_strategy_list,
                         max_length=self.MAX_LENGTH_ATTACKER,
                         do_sample=True,
                         temperature=1.0,
@@ -604,11 +604,11 @@ class AutoDANTurbo:
                 )
             else:
                 current_library = self.test_library.all()
-                valid, retrival_strategy_list = self.retrival.pop(current_library, prev_target_response)
+                valid, retrieval_strategy_list = self.retrieval.pop(current_library, prev_target_response)
                 if valid:
                     jailbreak_prompt, _ = self.attacker.use_strategy(
                         request,
-                        retrival_strategy_list,
+                        retrieval_strategy_list,
                         max_length=self.MAX_LENGTH_ATTACKER,
                         do_sample=True,
                         temperature=1.0,
@@ -617,7 +617,7 @@ class AutoDANTurbo:
                 else:
                     jailbreak_prompt, _ = self.attacker.find_new_strategy(
                         request,
-                        retrival_strategy_list,
+                        retrieval_strategy_list,
                         max_length=self.MAX_LENGTH_ATTACKER,
                         do_sample=True,
                         temperature=1.0,

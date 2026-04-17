@@ -25,6 +25,7 @@ class HuggingFaceModel:
 
         quantization_config = None
         torch_dtype = torch.float16
+        added_pad_token = False
         
         if use_quantization:
             if quantization_type == "4bit":
@@ -67,6 +68,14 @@ class HuggingFaceModel:
             
             # Load tokenizer và model từ local với quantization
             self.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token)
+            if self.tokenizer.pad_token is None:
+                if self.tokenizer.eos_token is not None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
+                else:
+                    self.tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+                    added_pad_token = True
+            if hasattr(self.tokenizer, "padding_side"):
+                self.tokenizer.padding_side = "left"
             # ✅ Khi dùng quantization, phải force lên GPU (không thể dùng "auto" vì sẽ dispatch lên CPU/disk)
             device_map_value = "cuda:0" if torch.cuda.is_available() and use_quantization else "auto"
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -76,6 +85,10 @@ class HuggingFaceModel:
                 quantization_config=quantization_config,
                 torch_dtype=torch_dtype,
             )
+            if added_pad_token:
+                self.model.resize_token_embeddings(len(self.tokenizer))
+            if getattr(self.model.config, "pad_token_id", None) is None and self.tokenizer.pad_token_id is not None:
+                self.model.config.pad_token_id = self.tokenizer.pad_token_id
             print("Model loaded with quantization successfully!")
             
             # ✅ Clear CUDA cache sau khi load để giải phóng memory
@@ -96,8 +109,12 @@ class HuggingFaceModel:
                 self.tokenizer.save_pretrained(model_path)
                 print("Tokenizer re-downloaded and saved.")
             
-            if hasattr(self.tokenizer, "pad_token"):
-                self.tokenizer.pad_token = self.tokenizer.eos_token
+            if self.tokenizer.pad_token is None:
+                if self.tokenizer.eos_token is not None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
+                else:
+                    self.tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+                    added_pad_token = True
             if hasattr(self.tokenizer, "padding_side"):
                 self.tokenizer.padding_side = "left"
             # Load từ local với quantization
@@ -110,6 +127,10 @@ class HuggingFaceModel:
                 quantization_config=quantization_config,
                 torch_dtype=torch_dtype,
             )
+            if added_pad_token:
+                self.model.resize_token_embeddings(len(self.tokenizer))
+            if getattr(self.model.config, "pad_token_id", None) is None and self.tokenizer.pad_token_id is not None:
+                self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
             
             # ✅ Clear CUDA cache sau khi load để giải phóng memory

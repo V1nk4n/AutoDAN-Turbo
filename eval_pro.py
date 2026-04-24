@@ -246,6 +246,22 @@ if __name__ == "__main__":
         target_model_key=repo_name,
     )
 
+    # Optional: reuse cross-epoch refine hints from training (same file as main.py)
+    epoch_memory_file = os.path.join(os.getcwd(), "logs", "epoch_refine_memory.json")
+    if os.path.exists(epoch_memory_file):
+        try:
+            with open(epoch_memory_file, "r", encoding="utf-8") as emf:
+                em = json.load(emf)
+            if isinstance(em, dict):
+                em.setdefault("global_refine_hints", [])
+                em.setdefault("failure_patterns", {})
+                _hint = AutoDANTurboPro.build_epoch_refine_hint_from_memory(em)
+                pipeline.set_epoch_refine_hint(_hint)
+                if _hint:
+                    logger.info("Loaded epoch refine hint for eval (len=%d) from %s", len(_hint), epoch_memory_file)
+        except Exception as ex:
+            logger.warning("Could not load epoch_refine_memory for eval: %s", ex)
+
     # Initialize HarmBench classifier if requested
     harmbench_classifier = None
     if args.use_harmbench_classifier:

@@ -84,6 +84,23 @@ def config():
     config.add_argument("--pro_explore_max_new_tokens", type=int, default=64, help="Target max_new_tokens during exploration phase")
     config.add_argument("--pro_exploit_max_new_tokens", type=int, default=128, help="Target max_new_tokens during exploitation phase")
     config.add_argument("--pro_enable_eval_cache", action='store_true', help="Enable prompt-level evaluation cache for PRO")
+    config.add_argument("--pro_enable_fast_judge", action='store_true', help="Enable fast heuristic judge before dual scorer")
+    config.add_argument("--pro_fast_judge_min_len", type=int, default=24, help="Minimum response length for fast judge")
+    config.add_argument("--pro_enable_feedback_scheduler", action='store_true', help="Enable adaptive feedback scheduler with time budget")
+    config.add_argument("--pro_feedback_budget_ms", type=float, default=5000.0, help="Per-request time budget for feedback+refine (ms)")
+    config.add_argument("--pro_feedback_min_delta", type=float, default=0.02, help="Minimum score delta to trigger adaptive feedback")
+    config.add_argument("--pro_feedback_cooldown_turns", type=int, default=1, help="Cooldown turns between adaptive feedback runs")
+    config.add_argument("--mfps_enabled", action='store_true', help="Enable MFPS v2 multi-fidelity candidate evaluation")
+    config.add_argument("--mfps_profile", type=str, default="balanced", choices=["conservative", "balanced", "aggressive"], help="F1 threshold profile: conservative/balanced/aggressive")
+    config.add_argument("--mfps_alpha0", type=float, default=0.5, help="Keep ratio after MFPS stage F0")
+    config.add_argument("--mfps_alpha1", type=float, default=0.5, help="Keep ratio after MFPS stage F1")
+    config.add_argument("--mfps_short_max_new_tokens", type=int, default=32, help="Short decode max_new_tokens in MFPS F1")
+    config.add_argument("--mfps_min_candidates_f2", type=int, default=1, help="Minimum candidates entering MFPS F2")
+    config.add_argument("--mfps_uncertainty_band", type=float, default=0.1, help="Uncertainty band for MFPS decisions")
+    config.add_argument("--mfps_eval_budget_ms", type=float, default=0.0, help="Per-request MFPS eval budget in ms (0=unlimited)")
+    config.add_argument("--mfps_w_f0", type=float, default=0.35, help="Weight of F0 score in MFPS composite score")
+    config.add_argument("--mfps_w_f1", type=float, default=0.65, help="Weight of F1 score in MFPS composite score")
+    config.add_argument("--mfps_uncertainty_penalty", type=float, default=0.2, help="Penalty on uncertainty in MFPS composite score")
     config.add_argument("--target_max_new_tokens", type=int, default=150, help="Maximum number of new tokens for target model")
     config.add_argument("--pattern_force_seed", action="store_true", help="Force seed for pattern manager")
     config.add_argument("--pattern_frozen", action="store_true", help="Freeze pattern manager")
@@ -145,6 +162,7 @@ if __name__ == '__main__':
     log_file = os.path.join(log_dir, 'running.log')
     logger = logging.getLogger("CustomLogger")
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False
 
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.INFO)
@@ -162,18 +180,17 @@ if __name__ == '__main__':
     utc_now = datetime.datetime.now(datetime.timezone.utc)
     wandb.init(project=f"AutoDAN-Turbo", name=f"running-{utc_now}")
     
-    # ✅ Thêm file handler cho wandb directory
+    # ✅ Thêm file handler cho riêng run W&B (đồng bộ đầy đủ theo run)
     try:
-        # wandb.run.dir trỏ đến files/, cần lấy parent để có root của run directory
-        wandb_run_root = os.path.dirname(wandb.run.dir)  # Lấy parent directory
-        wandb_logs_dir = os.path.join(wandb_run_root, 'logs')
-        os.makedirs(wandb_logs_dir, exist_ok=True)
-        wandb_log_file = os.path.join(wandb_logs_dir, 'running.log')
-        
+        # Ghi trực tiếp vào run directory để W&B sync theo từng lần chạy
+        wandb_log_file = os.path.join(wandb.run.dir, 'running.log')
         wandb_file_handler = logging.FileHandler(wandb_log_file)
         wandb_file_handler.setLevel(logging.INFO)
         wandb_file_handler.setFormatter(file_formatter)
         logger.addHandler(wandb_file_handler)
+
+        # Theo dõi file log theo thời gian thực cho run hiện tại
+        wandb.save(wandb_log_file, policy="live")
         logger.info(f"✅ Logging to wandb directory: {wandb_log_file}")
     except Exception as e:
         logger.warning(f"⚠️ Failed to setup wandb logging: {e}")
@@ -325,7 +342,24 @@ if __name__ == '__main__':
                                                 pro_exploit_top_k=args.pro_exploit_top_k,
                                                 pro_explore_max_new_tokens=args.pro_explore_max_new_tokens,
                                                 pro_exploit_max_new_tokens=args.pro_exploit_max_new_tokens,
-                                                pro_enable_eval_cache=args.pro_enable_eval_cache)
+                                                pro_enable_eval_cache=args.pro_enable_eval_cache,
+                                                pro_enable_fast_judge=args.pro_enable_fast_judge,
+                                                pro_fast_judge_min_len=args.pro_fast_judge_min_len,
+                                                pro_enable_feedback_scheduler=args.pro_enable_feedback_scheduler,
+                                                pro_feedback_budget_ms=args.pro_feedback_budget_ms,
+                                                pro_feedback_min_delta=args.pro_feedback_min_delta,
+                                                pro_feedback_cooldown_turns=args.pro_feedback_cooldown_turns,
+                                                mfps_enabled=args.mfps_enabled,
+                                                mfps_profile=args.mfps_profile,
+                                                mfps_alpha0=args.mfps_alpha0,
+                                                mfps_alpha1=args.mfps_alpha1,
+                                                mfps_short_max_new_tokens=args.mfps_short_max_new_tokens,
+                                                mfps_min_candidates_f2=args.mfps_min_candidates_f2,
+                                                mfps_uncertainty_band=args.mfps_uncertainty_band,
+                                                mfps_eval_budget_ms=args.mfps_eval_budget_ms,
+                                                mfps_w_f0=args.mfps_w_f0,
+                                                mfps_w_f1=args.mfps_w_f1,
+                                                mfps_uncertainty_penalty=args.mfps_uncertainty_penalty)
     else:
         autodan_turbo_pipeline = AutoDANTurbo(turbo_framework=attack_kit,
                                             data=data,

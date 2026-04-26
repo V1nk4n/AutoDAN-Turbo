@@ -30,6 +30,41 @@ def config():
     parser.add_argument("--pro_n_candidates", type=int, default=4)
     parser.add_argument("--pro_top_k", type=int, default=2)
     parser.add_argument("--pro_score_threshold", type=float, default=0.5)
+    parser.add_argument("--pro_per_request_epochs", action="store_true", help="Run each request for `epochs` repetitions")
+    parser.add_argument("--pro_early_stop_patience", type=int, default=5, help="Stop request repeats when score plateaus")
+    parser.add_argument("--pro_early_stop_min_delta", type=float, default=0.01, help="Minimum score improvement to reset plateau")
+    parser.add_argument("--pro_refusal_streak_stop", type=int, default=4, help="Stop repeats after consecutive refusals")
+    parser.add_argument("--pro_feedback_every", type=int, default=2, help="Run feedback/refine every N repeats")
+    parser.add_argument("--pro_feedback_min_quality", type=float, default=0.35, help="Always run feedback when quality exceeds threshold")
+    parser.add_argument("--pro_phase_split", type=float, default=0.7, help="Exploration ratio across repeats [0,1]")
+    parser.add_argument("--pro_explore_n_candidates", type=int, default=2, help="Candidates per turn during exploration")
+    parser.add_argument("--pro_explore_top_k", type=int, default=1, help="Top-k during exploration")
+    parser.add_argument("--pro_exploit_n_candidates", type=int, default=4, help="Candidates per turn during exploitation")
+    parser.add_argument("--pro_exploit_top_k", type=int, default=2, help="Top-k during exploitation")
+    parser.add_argument("--pro_explore_max_new_tokens", type=int, default=64, help="Target max_new_tokens during exploration")
+    parser.add_argument("--pro_exploit_max_new_tokens", type=int, default=128, help="Target max_new_tokens during exploitation")
+    parser.add_argument("--pro_enable_eval_cache", action="store_true", help="Enable prompt-level evaluation cache")
+    parser.add_argument("--pro_eval_batch_size", type=int, default=2, help="Batch size for candidate evaluation")
+    parser.add_argument("--pro_enable_retrieval_cache", action="store_true", help="Enable retrieval embedding cache")
+    parser.add_argument("--pro_enable_fast_judge", action="store_true", help="Enable fast heuristic judge before dual scorer")
+    parser.add_argument("--pro_fast_judge_min_len", type=int, default=24, help="Minimum response length for fast judge")
+    parser.add_argument("--pro_enable_feedback_scheduler", action="store_true", help="Enable adaptive feedback scheduler")
+    parser.add_argument("--pro_feedback_budget_ms", type=float, default=5000.0, help="Per-request feedback budget in ms")
+    parser.add_argument("--pro_feedback_min_delta", type=float, default=0.02, help="Minimum score delta for adaptive feedback")
+    parser.add_argument("--pro_feedback_cooldown_turns", type=int, default=1, help="Cooldown turns between adaptive feedback runs")
+
+    # MFPS v2
+    parser.add_argument("--mfps_enabled", action="store_true", help="Enable MFPS v2 multi-fidelity candidate evaluation")
+    parser.add_argument("--mfps_profile", type=str, default="balanced", choices=["conservative", "balanced", "aggressive"], help="F1 threshold profile")
+    parser.add_argument("--mfps_alpha0", type=float, default=0.5, help="Keep ratio after MFPS F0")
+    parser.add_argument("--mfps_alpha1", type=float, default=0.5, help="Keep ratio after MFPS F1")
+    parser.add_argument("--mfps_short_max_new_tokens", type=int, default=32, help="Short decode max_new_tokens in MFPS F1")
+    parser.add_argument("--mfps_min_candidates_f2", type=int, default=1, help="Minimum candidates entering MFPS F2")
+    parser.add_argument("--mfps_uncertainty_band", type=float, default=0.1, help="Uncertainty band for MFPS decisions")
+    parser.add_argument("--mfps_eval_budget_ms", type=float, default=0.0, help="Per-request MFPS eval budget in ms (0=unlimited)")
+    parser.add_argument("--mfps_w_f0", type=float, default=0.35, help="Weight of F0 score in MFPS composite")
+    parser.add_argument("--mfps_w_f1", type=float, default=0.65, help="Weight of F1 score in MFPS composite")
+    parser.add_argument("--mfps_uncertainty_penalty", type=float, default=0.2, help="Penalty on uncertainty in MFPS composite")
     parser.add_argument("--target_max_new_tokens", type=int, default=150)
     parser.add_argument("--nll_min", type=float, default=0.0)
     parser.add_argument("--nll_max", type=float, default=10.0)
@@ -244,6 +279,39 @@ if __name__ == "__main__":
         nll_min=args.nll_min,
         nll_max=args.nll_max,
         target_model_key=repo_name,
+        per_request_epochs=args.pro_per_request_epochs,
+        pro_early_stop_patience=args.pro_early_stop_patience,
+        pro_early_stop_min_delta=args.pro_early_stop_min_delta,
+        pro_refusal_streak_stop=args.pro_refusal_streak_stop,
+        pro_feedback_every=args.pro_feedback_every,
+        pro_feedback_min_quality=args.pro_feedback_min_quality,
+        pro_phase_split=args.pro_phase_split,
+        pro_explore_n_candidates=args.pro_explore_n_candidates,
+        pro_explore_top_k=args.pro_explore_top_k,
+        pro_exploit_n_candidates=args.pro_exploit_n_candidates,
+        pro_exploit_top_k=args.pro_exploit_top_k,
+        pro_explore_max_new_tokens=args.pro_explore_max_new_tokens,
+        pro_exploit_max_new_tokens=args.pro_exploit_max_new_tokens,
+        pro_enable_eval_cache=args.pro_enable_eval_cache,
+        pro_eval_batch_size=args.pro_eval_batch_size,
+        pro_enable_retrieval_cache=args.pro_enable_retrieval_cache,
+        pro_enable_fast_judge=args.pro_enable_fast_judge,
+        pro_fast_judge_min_len=args.pro_fast_judge_min_len,
+        pro_enable_feedback_scheduler=args.pro_enable_feedback_scheduler,
+        pro_feedback_budget_ms=args.pro_feedback_budget_ms,
+        pro_feedback_min_delta=args.pro_feedback_min_delta,
+        pro_feedback_cooldown_turns=args.pro_feedback_cooldown_turns,
+        mfps_enabled=args.mfps_enabled,
+        mfps_profile=args.mfps_profile,
+        mfps_alpha0=args.mfps_alpha0,
+        mfps_alpha1=args.mfps_alpha1,
+        mfps_short_max_new_tokens=args.mfps_short_max_new_tokens,
+        mfps_min_candidates_f2=args.mfps_min_candidates_f2,
+        mfps_uncertainty_band=args.mfps_uncertainty_band,
+        mfps_eval_budget_ms=args.mfps_eval_budget_ms,
+        mfps_w_f0=args.mfps_w_f0,
+        mfps_w_f1=args.mfps_w_f1,
+        mfps_uncertainty_penalty=args.mfps_uncertainty_penalty,
     )
 
     # Optional: reuse cross-epoch refine hints from training (same file as main.py)

@@ -177,18 +177,15 @@ if __name__ == "__main__":
     utc_now = datetime.datetime.now(datetime.timezone.utc)
     wandb.init(project="AutoDAN-Turbo", name=f"eval-{utc_now}")
     
-    # ✅ Thêm file handler cho wandb directory (giống main.py)
+    # ✅ Thêm file handler cho riêng run W&B
     try:
-        # wandb.run.dir trỏ đến files/, cần lấy parent để có root của run directory
-        wandb_run_root = os.path.dirname(wandb.run.dir)  # Lấy parent directory
-        wandb_logs_dir = os.path.join(wandb_run_root, 'logs')
-        os.makedirs(wandb_logs_dir, exist_ok=True)
-        wandb_log_file = os.path.join(wandb_logs_dir, 'eval.log')  # Dùng eval.log thay vì running.log
-        
+        os.makedirs(wandb.run.dir, exist_ok=True)
+        wandb_log_file = os.path.join(wandb.run.dir, 'eval.log')
         wandb_file_handler = logging.FileHandler(wandb_log_file)
         wandb_file_handler.setLevel(logging.INFO)
         wandb_file_handler.setFormatter(file_formatter)
         logger.addHandler(wandb_file_handler)
+        wandb.save(wandb_log_file, policy="live")
         logger.info(f"✅ Logging to wandb directory: {wandb_log_file}")
     except Exception as e:
         logger.warning(f"⚠️ Failed to setup wandb logging: {e}")

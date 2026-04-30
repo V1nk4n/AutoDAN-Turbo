@@ -182,6 +182,7 @@ if __name__ == '__main__':
     
     # ✅ Thêm file handler cho riêng run W&B (đồng bộ đầy đủ theo run)
     try:
+        os.makedirs(wandb.run.dir, exist_ok=True)
         # Ghi trực tiếp vào run directory để W&B sync theo từng lần chạy
         wandb_log_file = os.path.join(wandb.run.dir, 'running.log')
         wandb_file_handler = logging.FileHandler(wandb_log_file)

@@ -4,10 +4,10 @@
       "success_by_model": {},
       "learning_effectiveness": {
         "total_successes": 0,
-        "single_turn_count": 0,
-        "multi_turn_count": 0,
-        "avg_turns_to_success": 0.0,
-        "total_turns_used": 0
+        "single_round_success_count": 0,
+        "multi_round_success_count": 0,
+        "avg_rounds_to_success": 0.0,
+        "total_rounds_on_success": 0
       }
     },
     "strategies": {
@@ -20,12 +20,13 @@
           "freq": 0,
           "avg_score": 0.0,
           "successful_models": { "<model_name>": 0 },
-          "successful_turns": [1, 2]
+          "successful_library_rounds": [1, 2],
+          "trial_count": 0
         },
         "history": [
           {
             "outcome": "success",
-            "turn": 1,
+            "library_round": 1,
             "target_model": "string",
             "s_quality": 0.0,
             "query": "string",

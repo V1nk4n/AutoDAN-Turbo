@@ -165,6 +165,27 @@ class HuggingFaceModel:
                 print(f"⚠️ Warning: No chat template available (neither custom nor tokenizer default)")
         print("Model loaded with automatic device mapping across GPUs.")
 
+    def _resolve_generation_kwargs(self, kwargs):
+        """
+        Merge per-call kwargs with generation config defaults.
+        Caller kwargs always take precedence.
+        """
+        merged = {}
+        if isinstance(self.config, dict):
+            for key in ("temperature", "top_p", "top_k", "repetition_penalty", "do_sample"):
+                if key in self.config:
+                    merged[key] = self.config[key]
+        merged.update(kwargs or {})
+
+        # Sampling must be enabled for temperature/top_p/top_k to have effect.
+        if "do_sample" not in merged:
+            temp = float(merged.get("temperature", 1.0))
+            top_p = float(merged.get("top_p", 1.0))
+            top_k = int(merged.get("top_k", 0)) if merged.get("top_k", None) is not None else 0
+            merged["do_sample"] = (temp != 1.0) or (top_p < 1.0) or (top_k > 0)
+
+        return merged
+
     def generate(self, system: str, user: str, max_length: int = 1000, **kwargs):
         """
         Generate a response based on the input text.
@@ -189,12 +210,13 @@ class HuggingFaceModel:
         # Move inputs to the correct device based on their device_map
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
+        gen_kwargs = self._resolve_generation_kwargs(kwargs)
         outputs = self.model.generate(
             **inputs,
             max_new_tokens=min(max_length, 4096),
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            **kwargs,
+            **gen_kwargs,
         )
         response_start = inputs["input_ids"].shape[-1]
         response_ids = outputs[0][response_start:]
@@ -210,12 +232,13 @@ class HuggingFaceModel:
         inputs = self.tokenizer(plain_text, return_tensors="pt")
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
+        gen_kwargs = self._resolve_generation_kwargs(kwargs)
         outputs = self.model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            **kwargs,
+            **gen_kwargs,
         )
 
         response_start = inputs["input_ids"].shape[-1]
@@ -276,7 +299,9 @@ class HuggingFaceModel:
 
         max_new_tokens = min(min_new_tokens_list)
 
-        gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
+        gen_kwargs = self._resolve_generation_kwargs(
+            {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
+        )
 
         outputs = self.model.generate(
             **padded,
@@ -320,12 +345,13 @@ class HuggingFaceModel:
         inputs = self.tokenizer(plain_text, return_tensors="pt")
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
+        gen_kwargs = self._resolve_generation_kwargs(kwargs)
         outputs = self.model.generate(
             **inputs,
             max_length=max_length,
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            **kwargs,
+            **gen_kwargs,
         )
         response_start = inputs["input_ids"].shape[-1]
         response_ids = outputs[0][response_start:]
@@ -386,12 +412,13 @@ class HuggingFaceModel:
         if max_new_tokens <= 0:
             max_new_tokens = min_new_tokens
 
+        gen_kwargs = self._resolve_generation_kwargs(kwargs)
         outputs = self.model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            **kwargs,
+            **gen_kwargs,
         )
         response_start = inputs["input_ids"].shape[-1]
         response_ids = outputs[0][response_start:]
@@ -464,7 +491,9 @@ class HuggingFaceModel:
 
         max_new_tokens = min(min_new_tokens_list)
 
-        gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
+        gen_kwargs = self._resolve_generation_kwargs(
+            {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
+        )
 
         outputs = self.model.generate(
             **padded,
@@ -504,12 +533,13 @@ class HuggingFaceModel:
 
         prompt_lens = inputs["attention_mask"].sum(dim=1)
 
+        gen_kwargs = self._resolve_generation_kwargs(kwargs)
         outputs = self.model.generate(
             **inputs,
             max_new_tokens=min(max_length, 4096),
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            **kwargs,
+            **gen_kwargs,
         )
 
         responses = []

@@ -14,6 +14,7 @@ class PatternManager:
         self.library: Dict[str, Dict[str, Any]] = {}
         self.analytics: Dict[str, Any] = {}
         self.test_mode = False
+        self._metrics_dirty = False
         self.load()
 
     @staticmethod
@@ -23,12 +24,53 @@ class PatternManager:
             "success_by_model": {},
             "learning_effectiveness": {
                 "total_successes": 0,
-                "single_turn_count": 0,
-                "multi_turn_count": 0,
-                "avg_turns_to_success": 0.0,
-                "total_turns_used": 0,
+                "single_round_success_count": 0,
+                "multi_round_success_count": 0,
+                "avg_rounds_to_success": 0.0,
+                "total_rounds_on_success": 0,
             },
         }
+
+    @staticmethod
+    def _migrate_learning_effectiveness(le: Dict[str, Any]) -> None:
+        if not isinstance(le, dict):
+            return
+        if "single_round_success_count" not in le and "single_turn_count" in le:
+            le["single_round_success_count"] = int(le.get("single_turn_count", 0))
+        if "multi_round_success_count" not in le and "multi_turn_count" in le:
+            le["multi_round_success_count"] = int(le.get("multi_turn_count", 0))
+        if "total_rounds_on_success" not in le and "total_turns_used" in le:
+            le["total_rounds_on_success"] = int(le.get("total_turns_used", 0))
+        if "avg_rounds_to_success" not in le and "avg_turns_to_success" in le:
+            le["avg_rounds_to_success"] = float(le.get("avg_turns_to_success", 0.0))
+        for old_k in ("single_turn_count", "multi_turn_count", "total_turns_used", "avg_turns_to_success"):
+            le.pop(old_k, None)
+        defaults = PatternManager._default_analytics()["learning_effectiveness"]
+        for k, v in defaults.items():
+            le.setdefault(k, v)
+
+    def _migrate_legacy_turn_schema_inplace(self) -> None:
+        le = self.analytics.get("learning_effectiveness")
+        if isinstance(le, dict):
+            self._migrate_learning_effectiveness(le)
+        for info in self.strategies.values():
+            if not isinstance(info, dict):
+                continue
+            m = info.setdefault("metrics", {})
+            if "successful_library_rounds" not in m and "successful_turns" in m:
+                st = m.get("successful_turns")
+                if isinstance(st, list):
+                    m["successful_library_rounds"] = [int(t) for t in st]
+            m.pop("successful_turns", None)
+            hist = info.get("history")
+            if not isinstance(hist, list):
+                continue
+            for h in hist:
+                if not isinstance(h, dict):
+                    continue
+                if "library_round" not in h and "turn" in h:
+                    h["library_round"] = int(h["turn"])
+                    h.pop("turn", None)
 
     @staticmethod
     def _safe_rate(success_count: int, trial_count: int) -> float:
@@ -49,6 +91,9 @@ class PatternManager:
         history = info.get("history", [])
         if not isinstance(history, list):
             history = []
+        rounds_src = metrics.get("successful_library_rounds")
+        if rounds_src is None:
+            rounds_src = metrics.get("successful_turns", [])
         return {
             "name": str(info.get("name", "")),
             "description": str(info.get("description", "")),
@@ -58,7 +103,7 @@ class PatternManager:
                 "freq": int(metrics.get("freq", 0)),
                 "avg_score": float(metrics.get("avg_score", 0.0)),
                 "successful_models": dict(metrics.get("successful_models", {})),
-                "successful_turns": [int(t) for t in metrics.get("successful_turns", [])],
+                "successful_library_rounds": [int(t) for t in rounds_src],
                 "trial_count": int(metrics.get("trial_count", 0)),
             },
             "history": history,
@@ -290,7 +335,7 @@ class PatternManager:
             if not isinstance(info["metrics"], dict):
                 return False
             m = info["metrics"]
-            for mk in ("freq", "avg_score", "successful_models", "successful_turns"):
+            for mk in ("freq", "avg_score", "successful_models"):
                 if mk not in m:
                     return False
             if not isinstance(m["freq"], int):
@@ -299,7 +344,9 @@ class PatternManager:
                 return False
             if not isinstance(m["successful_models"], dict):
                 return False
-            if not isinstance(m["successful_turns"], list):
+            lr_ok = "successful_library_rounds" in m and isinstance(m.get("successful_library_rounds"), list)
+            st_ok = "successful_turns" in m and isinstance(m.get("successful_turns"), list)
+            if not (lr_ok or st_ok):
                 return False
         return True
 
@@ -329,7 +376,7 @@ class PatternManager:
                         "successful_models": {
                             str(m): 1 for m in tags.get("target_models", []) if str(m).strip()
                         },
-                        "successful_turns": [int(t) for t in tags.get("turns", [])],
+                        "successful_library_rounds": [int(t) for t in tags.get("turns", [])],
                         "trial_count": trial_count,
                     },
                 }
@@ -391,12 +438,14 @@ class PatternManager:
         self.strategies = store["strategies"]
         # Compatibility alias for old call sites expecting self.library.
         self.library = self.strategies
+        self._migrate_legacy_turn_schema_inplace()
         if not self.strategies:
             logging.info("PatternManager: empty strategy store loaded, seeding defaults.")
             seeded = self._initialize_seed_library()
             self.analytics = seeded["analytics"]
             self.strategies = seeded["strategies"]
             self.library = self.strategies
+            self._migrate_legacy_turn_schema_inplace()
             self.save()
         return True
 
@@ -409,22 +458,38 @@ class PatternManager:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
             os.replace(tmp, self.filepath)
+            self._metrics_dirty = False
             return True
         except Exception:
             if os.path.exists(tmp):
                 os.remove(tmp)
             return False
 
-    def select_top_k(self, target_model, turn, k: int = 5) -> List[Dict[str, Any]]:
+    def persist_if_dirty(self) -> bool:
+        """Write library to disk if metrics changed since last save (e.g. trial_count)."""
+        if self.frozen:
+            return False
+        if not self._metrics_dirty:
+            return False
+        if self.test_mode:
+            self._metrics_dirty = False
+            return True
+        return self.save()
+
+    def select_top_k(self, target_model, library_round, k: int = 5) -> List[Dict[str, Any]]:
         items = []
         rates = []
         qualities = []
         for sid, info in self.strategies.items():
             m = info.get("metrics", {})
             freq = int(m.get("freq", 0))
-            trials = int(m.get("trial_count", freq))
+            # Defensive fallback: if a legacy entry has no separate trial_count
+            # we treat it as ``freq`` so the rate degrades gracefully to 1.0
+            # rather than blowing up. New entries are tracked properly via
+            # save_attempt() and will have ``trial_count >= freq``.
+            trials = max(int(m.get("trial_count", 0)), freq)
             q = float(m.get("avg_score", 0.0))
-            rate = self._safe_rate(freq, max(trials, freq, 1))
+            rate = self._safe_rate(freq, trials)
             rates.append(rate)
             qualities.append(q)
             items.append((sid, info, rate, q))
@@ -438,11 +503,17 @@ class PatternManager:
         for sid, info, rate, q in items:
             m = info.get("metrics", {})
             models = set(str(x) for x in m.get("successful_models", {}).keys())
-            turns = set(int(t) for t in m.get("successful_turns", []))
+            rounds = set(
+                int(t)
+                for t in (
+                    m.get("successful_library_rounds")
+                    or m.get("successful_turns", [])
+                )
+            )
             f_norm = self._minmax(rate, rmin, rmax)
             s_norm = self._minmax(q, qmin, qmax)
             m_match = 1.0 if (target_model and str(target_model) in models) else 0.0
-            t_match = 1.0 if (turn is not None and int(turn) in turns) else 0.0
+            t_match = 1.0 if (library_round is not None and int(library_round) in rounds) else 0.0
             s_rank = 0.3 * f_norm + 0.3 * s_norm + 0.25 * m_match + 0.15 * t_match
             ranked.append(
                 {
@@ -485,7 +556,7 @@ class PatternManager:
                 "description": strategy_obj.get("description", ""),
                 "keywords": strategy_obj.get("keywords", []),
                 "examples": strategy_obj.get("examples", []),
-                "metrics": {"freq": 0, "avg_score": 0.0, "successful_models": {}, "successful_turns": [], "trial_count": 0},
+                "metrics": {"freq": 0, "avg_score": 0.0, "successful_models": {}, "successful_library_rounds": [], "trial_count": 0},
             }
         )
         if initial_score > 0:
@@ -499,7 +570,7 @@ class PatternManager:
         self,
         strategy_id: str,
         target_model: str,
-        turn: int,
+        library_round: int,
         s_quality: float,
         query: str = "",
         response: str = "",
@@ -514,20 +585,26 @@ class PatternManager:
         freq = int(metrics.get("freq", 0)) + 1
         old_avg = float(metrics.get("avg_score", 0.0))
         metrics["freq"] = freq
-        metrics["trial_count"] = int(metrics.get("trial_count", 0)) + 1
+        # NOTE: trial_count is tracked separately via save_attempt() to keep
+        # trials and successes decoupled. We only ensure trial_count >= freq
+        # to guard against legacy data or callers that forgot to record a trial.
+        if int(metrics.get("trial_count", 0)) < freq:
+            metrics["trial_count"] = freq
         metrics["avg_score"] = old_avg + (float(s_quality) - old_avg) / max(freq, 1)
         successful_models = metrics.setdefault("successful_models", {})
         if target_model:
             successful_models[str(target_model)] = int(successful_models.get(str(target_model), 0)) + 1
-        successful_turns = metrics.setdefault("successful_turns", [])
-        if int(turn) not in successful_turns:
-            successful_turns.append(int(turn))
+        lr = int(library_round)
+        s_rounds = metrics.setdefault("successful_library_rounds", [])
+        if lr not in s_rounds:
+            s_rounds.append(lr)
+        metrics.pop("successful_turns", None)
 
         history = info.setdefault("history", [])
         history.append(
             {
                 "outcome": "success",
-                "turn": int(turn),
+                "library_round": lr,
                 "target_model": str(target_model),
                 "s_quality": float(s_quality),
                 "query": str(query)[:300],
@@ -540,14 +617,15 @@ class PatternManager:
 
         # Keep lightweight analytics in sync.
         le = self.analytics.setdefault("learning_effectiveness", {})
+        PatternManager._migrate_learning_effectiveness(le)
         le["total_successes"] = int(le.get("total_successes", 0)) + 1
-        le["total_turns_used"] = int(le.get("total_turns_used", 0)) + int(turn)
+        le["total_rounds_on_success"] = int(le.get("total_rounds_on_success", 0)) + lr
         total_successes = max(int(le.get("total_successes", 1)), 1)
-        le["avg_turns_to_success"] = float(le.get("total_turns_used", 0)) / float(total_successes)
-        if int(turn) <= 1:
-            le["single_turn_count"] = int(le.get("single_turn_count", 0)) + 1
+        le["avg_rounds_to_success"] = float(le.get("total_rounds_on_success", 0)) / float(total_successes)
+        if lr <= 1:
+            le["single_round_success_count"] = int(le.get("single_round_success_count", 0)) + 1
         else:
-            le["multi_turn_count"] = int(le.get("multi_turn_count", 0)) + 1
+            le["multi_round_success_count"] = int(le.get("multi_round_success_count", 0)) + 1
 
         success_by_model = self.analytics.setdefault("success_by_model", {})
         if target_model:
@@ -556,3 +634,44 @@ class PatternManager:
         if self.test_mode:
             return True
         return self.save()
+
+    def save_attempt(self, strategy_id: str) -> bool:
+        """Record one *trial* (arm pull) for a strategy regardless of outcome.
+
+        Each call increments only ``metrics.trial_count``. Successes are
+        recorded separately via :meth:`save_success`, which bumps ``freq``.
+        Does not write to disk by itself; call :meth:`persist_if_dirty` or any
+        method that invokes :meth:`save` (e.g. ``save_success``) to flush.
+        """
+        if self.frozen:
+            return False
+        if not strategy_id or strategy_id not in self.strategies:
+            return False
+        info = self.strategies[strategy_id]
+        metrics = info.setdefault("metrics", {})
+        metrics["trial_count"] = int(metrics.get("trial_count", 0)) + 1
+        self._metrics_dirty = True
+        if self.test_mode:
+            return True
+        return True
+
+    def save_attempts(self, strategy_ids: List[str]) -> int:
+        """Batch version of :meth:`save_attempt`.
+
+        Increments ``trial_count`` once for every entry in ``strategy_ids``
+        (duplicates count multiple times). Does not write to disk; call
+        :meth:`persist_if_dirty` or :meth:`save` to flush. Returns the number
+        of increments actually applied.
+        """
+        if self.frozen or not strategy_ids:
+            return 0
+        applied = 0
+        for sid in strategy_ids:
+            if not sid or sid not in self.strategies:
+                continue
+            metrics = self.strategies[sid].setdefault("metrics", {})
+            metrics["trial_count"] = int(metrics.get("trial_count", 0)) + 1
+            applied += 1
+        if applied:
+            self._metrics_dirty = True
+        return applied

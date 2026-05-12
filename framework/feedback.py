@@ -89,7 +89,8 @@ class Feedback():
         user = f"""
             Goal request:
             {request}
-            Failed branches (sorted by quality descending):
+            Failed branches (sorted by quality descending). Field alignment with ``logs/pattern_library.json`` history:
+            each branch's `prompt` is an attacker `query`; `target_response` is the victim output (would be stored as `response` on success).
             {json.dumps(compact, ensure_ascii=False, indent=2)}
             Best failed branch:
             {json.dumps(best_compact, ensure_ascii=False, indent=2)}

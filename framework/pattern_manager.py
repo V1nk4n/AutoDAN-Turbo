@@ -515,12 +515,26 @@ class PatternManager:
             m_match = 1.0 if (target_model and str(target_model) in models) else 0.0
             t_match = 1.0 if (library_round is not None and int(library_round) in rounds) else 0.0
             s_rank = 0.3 * f_norm + 0.3 * s_norm + 0.25 * m_match + 0.15 * t_match
+            raw_examples = info.get("examples", [])
+            if not isinstance(raw_examples, list):
+                raw_examples = []
+            ex_trim = [str(e)[:500] for e in raw_examples[:6] if str(e).strip()]
+            kws = info.get("keywords", [])
+            if not isinstance(kws, list):
+                kws = []
+            kws_trim = [str(x).strip() for x in kws if str(x).strip()][:24]
+            name = str(info.get("name", "") or "")
+            desc = str(info.get("description", "") or "")
             ranked.append(
                 {
                     "strategy_id": sid,
-                    "Strategy": info.get("name", ""),  # compatibility for attacker prompt builder
-                    "Definition": info.get("description", ""),
-                    "Example": info.get("examples", []),
+                    "name": name,
+                    "description": desc,
+                    "keywords": kws_trim,
+                    "examples": ex_trim,
+                    "Strategy": name,
+                    "Definition": desc,
+                    "Example": ex_trim,
                     "S_rank": s_rank,
                 }
             )

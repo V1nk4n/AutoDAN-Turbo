@@ -1152,6 +1152,11 @@ class AutoDANTurboPro:
         return evals, stats
 
     def _extract_strategy_payload(self, summarizer_output):
+        """Map summarizer JSON to ``PatternManager.add_new_strategy`` / ``_default_strategy`` fields.
+
+        On-disk strategies also carry ``metrics`` and ``history``; those are never LLM outputs. The manager
+        initializes metrics and appends history via ``save_attempt`` / ``save_success`` during the PRO attack wave.
+        """
         data = summarizer_output
         if isinstance(data, tuple) and data:
             data = data[0]
@@ -1185,11 +1190,19 @@ class AutoDANTurboPro:
         else:
             keywords = []
 
+        raw_ex = data.get("examples", [])
+        if isinstance(raw_ex, str):
+            examples = [raw_ex.strip()] if raw_ex.strip() else []
+        elif isinstance(raw_ex, list):
+            examples = [str(e).strip()[:500] for e in raw_ex if str(e).strip()]
+        else:
+            examples = []
+
         return {
             "name": name,
             "description": description,
             "keywords": keywords,
-            "examples": data.get("examples", []),
+            "examples": examples,
         }
 
     def _resolve_strategy_id(self, generator_record: dict, top_strategies: list) -> Optional[str]:
@@ -1263,15 +1276,28 @@ class AutoDANTurboPro:
         return None
 
     def _summarize_new_strategy(self, request, prompt_used):
-        strategy_library = {}
+        strategy_library: Dict[str, Any] = {}
         if self.pattern_manager:
-            strategy_library = {
-                sid: {
-                    "Strategy": info.get("name", ""),
-                    "Definition": info.get("description", ""),
+            for sid, info in self.pattern_manager.strategies.items():
+                if not isinstance(info, dict):
+                    continue
+                ex = info.get("examples", [])
+                if not isinstance(ex, list):
+                    ex = []
+                ex_trim = [str(e)[:500] for e in ex[:8] if str(e).strip()]
+                kws = info.get("keywords", [])
+                if not isinstance(kws, list):
+                    kws = []
+                kws_trim = [str(k).strip() for k in kws if str(k).strip()][:24]
+                strategy_library[sid] = {
+                    "strategy_id": sid,
+                    "name": str(info.get("name", "") or ""),
+                    "description": str(info.get("description", "") or ""),
+                    "keywords": kws_trim,
+                    "examples": ex_trim,
+                    "Strategy": str(info.get("name", "") or ""),
+                    "Definition": str(info.get("description", "") or ""),
                 }
-                for sid, info in self.pattern_manager.strategies.items()
-            }
 
         try:
             raw = self.summarizer.summarize(

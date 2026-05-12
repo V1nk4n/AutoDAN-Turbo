@@ -38,7 +38,13 @@ def _pro_summarize_value(
     if isinstance(v, float):
         if v != v:  # NaN
             return "nan"
-        return f"{v:.4g}" if abs(v) < 1e4 else f"{v:.4g}"
+        av = abs(v)
+        # Avoid scientific notation for timings / large magnitudes (log readability).
+        if av >= 500.0:
+            return f"{v:.1f}"
+        if av >= 1.0:
+            return f"{v:.3f}"
+        return f"{v:.4g}"
     if isinstance(v, (np.floating, np.integer)):
         return _pro_summarize_value(v.item(), max_str=max_str, max_depth=max_depth, max_keys=max_keys, max_list=max_list, _depth=_depth)
     if isinstance(v, str):
@@ -70,7 +76,15 @@ def _pro_format_stage_human(payload: Dict[str, Any]) -> str:
     stage = payload.get("stage", "")
     dur = payload.get("duration_ms", 0.0)
     status = payload.get("status", "ok")
-    head = f"[PRO] step={step} stage={stage} {float(dur):.1f}ms"
+    ctx_bits: List[str] = []
+    if payload.get("pro_wave"):
+        ctx_bits.append(f"wave={payload['pro_wave']}")
+    if payload.get("pro_request_id") is not None:
+        ctx_bits.append(f"rid={payload['pro_request_id']}")
+    if payload.get("pro_repeat"):
+        ctx_bits.append(f"rep={payload['pro_repeat']}")
+    ctx = (" " + " ".join(ctx_bits)) if ctx_bits else ""
+    head = f"[PRO]{ctx} step={step} stage={stage} {float(dur):.1f}ms"
     if status and status != "ok":
         head += f" status={status}"
     lines = [head]
@@ -85,9 +99,17 @@ def _pro_format_stage_human(payload: Dict[str, Any]) -> str:
 
 def _pro_format_event_human(payload: Dict[str, Any]) -> str:
     ev = payload.get("event", "")
-    rest = {k: v for k, v in payload.items() if k != "event"}
+    ctx_bits: List[str] = []
+    if payload.get("pro_wave"):
+        ctx_bits.append(f"wave={payload['pro_wave']}")
+    if payload.get("pro_request_id") is not None:
+        ctx_bits.append(f"rid={payload['pro_request_id']}")
+    if payload.get("pro_repeat"):
+        ctx_bits.append(f"rep={payload['pro_repeat']}")
+    ctx = (" " + " ".join(ctx_bits)) if ctx_bits else ""
+    rest = {k: v for k, v in payload.items() if k not in ("event", "pro_wave", "pro_request_id", "pro_repeat")}
     body = _pro_summarize_value(rest) if rest else "{}"
-    return f"[PRO] {ev} {body}"
+    return f"[PRO]{ctx} {ev} {body}"
 
 
 class AutoDANTurboPro:
@@ -136,6 +158,11 @@ class AutoDANTurboPro:
         self.epoch_refine_hint: str = ""
         self._current_repeat_idx = 0
         self._current_phase = "explore"
+        # Correlates all [PRO] stage/event lines within one attack_request / smoke test.
+        self._pro_log_wave: Optional[str] = None
+        self._pro_log_request_id: Optional[int] = None
+        self._pro_log_repeat_cur: Optional[int] = None
+        self._pro_log_repeat_total: Optional[int] = None
 
     @staticmethod
     def build_epoch_refine_hint_from_memory(epoch_memory: Optional[Dict[str, Any]], max_chars: int = 3500) -> str:
@@ -181,6 +208,19 @@ class AutoDANTurboPro:
             text = text[: max_chars - 20] + "\n[hint_truncated]"
         return text
 
+    def _pro_attach_ctx(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        w = getattr(self, "_pro_log_wave", None)
+        if w:
+            payload["pro_wave"] = str(w)
+        rid = getattr(self, "_pro_log_request_id", None)
+        if rid is not None:
+            payload["pro_request_id"] = int(rid)
+        rc = getattr(self, "_pro_log_repeat_cur", None)
+        rt = getattr(self, "_pro_log_repeat_total", None)
+        if rc is not None and rt is not None:
+            payload["pro_repeat"] = f"{int(rc)}/{int(rt)}"
+        return payload
+
     def set_epoch_refine_hint(self, hint: str) -> None:
         h = (hint or "").strip()
         if len(h) > 6000:
@@ -189,7 +229,7 @@ class AutoDANTurboPro:
 
     def _log_pro(self, event: str, **fields):
         """Backward-compatible PRO logger."""
-        payload = {"event": event, **fields}
+        payload = self._pro_attach_ctx({"event": event, **fields})
         try:
             if getattr(self, "pro_verbose_pipeline_logs", False):
                 self.logger.info("[PRO] %s", json.dumps(payload, ensure_ascii=False))
@@ -210,12 +250,14 @@ class AutoDANTurboPro:
         error: str = None,
     ):
         """Structured stage log with duration for easier traceability."""
-        payload = {
-            "event": "pipeline_stage",
-            "step": int(step),
-            "stage": stage,
-            "duration_ms": round(float(duration_ms), 3),
-        }
+        payload = self._pro_attach_ctx(
+            {
+                "event": "pipeline_stage",
+                "step": int(step),
+                "stage": stage,
+                "duration_ms": round(float(duration_ms), 3),
+            }
+        )
         if status != "ok":
             payload["status"] = status
         if input_data is not None:
@@ -275,6 +317,10 @@ class AutoDANTurboPro:
             phase = "explore" if rep < phase_boundary else "exploit"
             self._current_repeat_idx = rep
             self._current_phase = phase
+            self._pro_log_wave = stage
+            self._pro_log_request_id = int(request_id)
+            self._pro_log_repeat_cur = int(rep + 1)
+            self._pro_log_repeat_total = int(repeats)
             self.logger.info(
                 "[PRO %s] wave start request_id=%s repeat=%s/%s phase=%s (next logs = one attack_request until repeat summary)",
                 stage,
@@ -431,7 +477,7 @@ class AutoDANTurboPro:
             return {}, attack_log, summarizer_log
 
         self.logger.info(
-            "[PRO warm_up] dataset: %d warm_up request(s); each may take many minutes on CPU",
+            "[PRO warm_up] dataset: %d warm_up request(s); each may take many minutes (CPU/GPU depends on models)",
             len(warmup_requests),
         )
         for request_id, request in enumerate(warmup_requests):
@@ -463,7 +509,7 @@ class AutoDANTurboPro:
             return {}, attack_log, summarizer_log
 
         self.logger.info(
-            "[PRO lifelong] dataset: %d lifelong request(s); each may take many minutes on CPU",
+            "[PRO lifelong] dataset: %d lifelong request(s); each may take many minutes (CPU/GPU depends on models)",
             len(lifelong_requests),
         )
         for request_id, request in enumerate(lifelong_requests):
@@ -477,10 +523,28 @@ class AutoDANTurboPro:
         return {}, attack_log, summarizer_log
 
     def test(self, request, input_strategy_library=None):
-        result = self.attack_request(request)
-        if isinstance(result, dict):
-            return str(result.get("final_prompt", "") or "")
-        return ""
+        prev = (
+            getattr(self, "_pro_log_wave", None),
+            getattr(self, "_pro_log_request_id", None),
+            getattr(self, "_pro_log_repeat_cur", None),
+            getattr(self, "_pro_log_repeat_total", None),
+        )
+        try:
+            self._pro_log_wave = "pro_smoke_test"
+            self._pro_log_request_id = None
+            self._pro_log_repeat_cur = 1
+            self._pro_log_repeat_total = 1
+            result = self.attack_request(request)
+            if isinstance(result, dict):
+                return str(result.get("final_prompt", "") or "")
+            return ""
+        finally:
+            (
+                self._pro_log_wave,
+                self._pro_log_request_id,
+                self._pro_log_repeat_cur,
+                self._pro_log_repeat_total,
+            ) = prev
 
     def evaluate_tier1(self, prompt, response):
         def _tier1_refusal(reason):
@@ -492,7 +556,10 @@ class AutoDANTurboPro:
                 "score_source":"hardcoded",
                 "reason":reason,
                 "prompt": prompt,
-                "target_response":response
+                "target_response":response,
+                "J": 0,
+                "judge_lane": "tier1_short",
+                "dual_called": False,
             })
         if not response or not str(response).strip():
             return _tier1_refusal("empty_response")
@@ -506,9 +573,9 @@ class AutoDANTurboPro:
     
     def evaluate_tier2(self, prompt, response):
         started = time.perf_counter()
-        self.logger.info(
-            "[PRO] evaluate_tier2: scoring one candidate (NLL + fast/dual); preview=%s",
-            str(prompt)[:100].replace("\n", " "),
+        self._log_pro(
+            "evaluate_tier2_start",
+            prompt_preview=str(prompt)[:100].replace("\n", " "),
         )
         nll = None
         score_loss = 0.0
@@ -557,7 +624,7 @@ class AutoDANTurboPro:
 
         if dual_called:
             dual_started = time.perf_counter()
-            self.logger.info("[PRO] evaluate_tier2: invoking dual scorer (score_dual)")
+            self._log_pro("evaluate_tier2_dual_scorer")
             try:
                 J = int(self.scorer.score_dual(prompt, response))
                 dual_elapsed_ms = (time.perf_counter() - dual_started) * 1000.0
@@ -702,9 +769,10 @@ class AutoDANTurboPro:
         if not candidates:
             return []
         if self.retrieval is None:
-            self.logger.info(
-                "[PRO] semantic_prune: retrieval unavailable, using first %d candidates.",
-                self.pro_top_k,
+            self._log_pro(
+                "semantic_prune_retrieval_unavailable",
+                n_take=int(self.pro_top_k),
+                note="using first n_take raw candidates (no embedding)",
             )
             return [(0.0, c) for c in candidates[: self.pro_top_k]]
 
@@ -712,6 +780,10 @@ class AutoDANTurboPro:
         if g is None:
             self.logger.warning(
                 "[PRO] semantic_prune: goal embed failed; returning candidates unchanged (truncated).",
+            )
+            self._log_pro(
+                "semantic_prune_goal_embed_failed",
+                n_take=int(self.pro_top_k),
             )
             return [(0.0, c) for c in candidates[: self.pro_top_k]]
 
@@ -733,13 +805,12 @@ class AutoDANTurboPro:
 
     def evaluate_candidate_batch(self, candidate_prompts, request: str = ""):
         n = len(candidate_prompts)
-        self.logger.info(
-            "[PRO] evaluate_candidate_batch: target model decode starting "
-            "(n=%d, batch_size=%d, max_new_tokens=%d, eval_cache=%s)",
-            n,
-            int(self.pro_eval_batch_size),
-            int(self.target_max_new_tokens),
-            self.eval_cache is not None,
+        self._log_pro(
+            "evaluate_candidate_batch_start",
+            n=n,
+            batch_size=int(self.pro_eval_batch_size),
+            max_new_tokens=int(self.target_max_new_tokens),
+            eval_cache=bool(self.eval_cache is not None),
         )
         if self.eval_cache is None:
             msgs = [[{"role": "user", "content": candidate_prompt}] for candidate_prompt in candidate_prompts]
@@ -1019,24 +1090,30 @@ class AutoDANTurboPro:
         if not pruned_candidates:
             return [], stats
 
-        self.logger.info(
-            "[PRO] staged_eval: F0 heuristic filter (candidates=%d)",
-            len(pruned_candidates),
-        )
+        self._log_pro("staged_eval_f0_start", n_in=len(pruned_candidates))
         # F0
         (f0, elapsed_ms) = self._time_call(self._staged_eval_stage0_filter, pruned_candidates, request)
         stats["ms_f0"] = float(elapsed_ms)
         self._staged_eval_spent_ms += float(elapsed_ms)
         f0_kept = self._staged_eval_select_top(f0, self.pro_staged_filter_keep_ratio, self.pro_staged_min_candidates_for_full_eval, "f0_score")
-        stats["n_after_f0"] = len(f0_kept)
         if self._staged_eval_budget_exceeded():
             # Budget guard: fallback to minimal set for F2.
             f0_kept = self._staged_eval_select_top(f0_kept, 1.0, self.pro_staged_min_candidates_for_full_eval, "f0_score")
+        stats["n_after_f0"] = len(f0_kept)
+        self._log_pro(
+            "staged_eval_f0_done",
+            n_in=len(pruned_candidates),
+            n_f0=len(f0),
+            n_f0_kept=len(f0_kept),
+            ms_f0=float(stats["ms_f0"]),
+            filter_keep_ratio=float(self.pro_staged_filter_keep_ratio),
+            min_keep=int(self.pro_staged_min_candidates_for_full_eval),
+        )
 
-        self.logger.info(
-            "[PRO] staged_eval: F1 short probe on target (n=%d, max_new_tokens=%d); next log after probe batch",
-            len(f0_kept),
-            int(self.pro_staged_short_max_new_tokens),
+        self._log_pro(
+            "staged_eval_f1_start",
+            n=len(f0_kept),
+            short_max_new_tokens=int(self.pro_staged_short_max_new_tokens),
         )
         # F1
         (f1, elapsed_ms) = self._time_call(self._staged_eval_stage1_probe, f0_kept)
@@ -1047,14 +1124,25 @@ class AutoDANTurboPro:
         f1_escalate = [m for m in f1 if str(m.get("f1_decision", "escalate")) != "reject"]
         source_for_select = f1_escalate if f1_escalate else f1
         f1_kept = self._staged_eval_select_top(source_for_select, self.pro_staged_probe_keep_ratio, self.pro_staged_min_candidates_for_full_eval, "f1_total")
-        stats["n_after_f1"] = len(f1_kept)
-        stats["n_f2"] = len(f1_kept)
         if self._staged_eval_budget_exceeded():
             f1_kept = self._staged_eval_select_top(f1_kept, 1.0, self.pro_staged_min_candidates_for_full_eval, "f1_total")
+        stats["n_after_f1"] = len(f1_kept)
+        stats["n_f2"] = len(f1_kept)
+        self._log_pro(
+            "staged_eval_f1_done",
+            n_f1=len(f1),
+            n_f1_non_reject=len(f1_escalate),
+            n_f1_select_source=len(source_for_select),
+            n_f1_kept=len(f1_kept),
+            ms_f1=float(stats["ms_f1"]),
+            probe_keep_ratio=float(self.pro_staged_probe_keep_ratio),
+        )
 
-        self.logger.info(
-            "[PRO] staged_eval: F2 full scoring (n=%d) — target decode + NLL/dual judge; may take minutes on CPU",
-            len(f1_kept),
+        self._log_pro(
+            "staged_eval_f2_start",
+            n=len(f1_kept),
+            full_max_new_tokens=int(self.target_max_new_tokens),
+            note="target decode + NLL/dual judge; wall time depends on GPU/CPU",
         )
         # F2 real eval (current behavior for kept candidates)
         (evals, elapsed_ms) = self._time_call(self._staged_eval_stage2_full_eval, f1_kept, request)
@@ -1237,10 +1325,11 @@ class AutoDANTurboPro:
         step_time_by_stage: Dict[str, float],
         request_time_by_stage: Dict[str, float],
     ) -> List[Any]:
-        # No _log_stage until this returns: attacker batch decode can take minutes (CPU / cold GPU).
-        self.logger.info(
-            "[PRO] structured_generation: calling attack model (batch n=%d); next stage log after completion",
-            int(self.pro_n_candidates),
+        # No _log_stage until this returns: attacker batch decode can take minutes (GPU/CPU / cold start).
+        self._log_pro(
+            "structured_generation_call",
+            batch_n=int(self.pro_n_candidates),
+            note="next pipeline_stage log is generate_candidates after batch returns",
         )
         (gen_batch_tuple, elapsed_ms) = self._time_call(
             self.attacker.generate_structured_candidate_batch,
@@ -1265,12 +1354,23 @@ class AutoDANTurboPro:
         request_time_by_stage["generate_candidates"] = (
             request_time_by_stage.get("generate_candidates", 0.0) + elapsed_ms
         )
+        n_items = len(structured_items)
+        n_nonempty = 0
+        for g in structured_items:
+            if isinstance(g, dict):
+                if str(g.get(PRO_GENERATOR_RESPONSE_KEY, "") or "").strip():
+                    n_nonempty += 1
+            elif str(g).strip():
+                n_nonempty += 1
         self._log_stage(
             step=1,
             stage="generate_candidates",
             duration_ms=elapsed_ms,
             input_data={"n_candidates": self.pro_n_candidates},
             output_data={
+                "n_structured_items": n_items,
+                "n_nonempty_response_field": n_nonempty,
+                "n_empty_response_field": n_items - n_nonempty,
                 "candidate_previews": [
                     (
                         str(g.get(PRO_GENERATOR_RESPONSE_KEY, ""))[:120]
@@ -1296,6 +1396,7 @@ class AutoDANTurboPro:
                 candidates.append(str(g.get(PRO_GENERATOR_RESPONSE_KEY, "") or ""))
             else:
                 candidates.append("")
+        n_nonempty_text = sum(1 for c in candidates if str(c).strip())
         (pruned_candidates, elapsed_ms) = self._time_call(
             self.prune_candidates_by_goal_similarity, request, candidates
         )
@@ -1309,6 +1410,9 @@ class AutoDANTurboPro:
             stage="semantic_prune",
             duration_ms=elapsed_ms,
             input_data={
+                "n_structured_items": len(structured_items),
+                "n_nonempty_prompt_text": n_nonempty_text,
+                "n_empty_prompt_text": len(candidates) - n_nonempty_text,
                 "n_candidates": len(candidates),
                 "threshold": self.pro_goal_similarity_floor,
                 "top_k": self.pro_top_k,
@@ -1365,10 +1469,10 @@ class AutoDANTurboPro:
         step_time_by_stage: Dict[str, float],
         request_time_by_stage: Dict[str, float],
     ) -> Tuple[List[Dict[str, Any]], float]:
-        self.logger.info(
-            "[PRO] candidate_evaluation: starting (candidates=%d, staged_eval=%s)",
-            len(top_k_candidates),
-            bool(self.pro_staged_eval_enabled),
+        self._log_pro(
+            "candidate_evaluation_start",
+            n_candidates=len(top_k_candidates),
+            staged_eval=bool(self.pro_staged_eval_enabled),
         )
         if self.pro_staged_eval_enabled:
             (staged_eval_batch, elapsed_ms) = self._time_call(
@@ -1411,6 +1515,10 @@ class AutoDANTurboPro:
                         "idx": idx,
                         "s_quality": ev.get("S_quality"),
                         "is_jailbroken": ev.get("is_jailbroken"),
+                        "J": ev.get("J"),
+                        "judge_lane": ev.get("judge_lane"),
+                        "dual_called": ev.get("dual_called"),
+                        "score_source": ev.get("score_source"),
                         "tier": ev.get("tier"),
                         "prompt_preview": str(ev.get("prompt", ""))[:120],
                         "target_response_preview": str(ev.get("target_response", ""))[:280],
@@ -1440,6 +1548,11 @@ class AutoDANTurboPro:
             output_data={
                 "best_s_quality": best_s_quality,
                 "success": success,
+                "J": best_candidate.get("J"),
+                "judge_lane": best_candidate.get("judge_lane"),
+                "dual_called": best_candidate.get("dual_called"),
+                "score_source": best_candidate.get("score_source"),
+                "tier": best_candidate.get("tier"),
                 "prompt_preview": str(best_candidate.get("prompt", ""))[:140],
             },
         )

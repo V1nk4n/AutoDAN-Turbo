@@ -185,6 +185,36 @@ def config():
         action="store_true",
         help="Log PRO pipeline stages as one-line JSON (default: short human-readable summaries)",
     )
+    parser.add_argument(
+        "--pro_dynamic_pattern_select",
+        action="store_true",
+        dest="pro_dynamic_pattern_select",
+        help="Dynamic heuristic ranking + epsilon-greedy top-k (needs embeddings)",
+    )
+    parser.add_argument("--pro_pattern_exploit_n", type=int, default=3, dest="pro_pattern_exploit_n")
+    parser.add_argument("--pro_pattern_explore_n", type=int, default=2, dest="pro_pattern_explore_n")
+    parser.add_argument("--pro_pattern_rank_w_avg", type=float, default=0.6, dest="pro_pattern_rank_w_avg")
+    parser.add_argument("--pro_pattern_rank_w_req", type=float, default=0.4, dest="pro_pattern_rank_w_req")
+    parser.add_argument("--pro_pattern_explore_seed", type=int, default=None, dest="pro_pattern_explore_seed")
+    parser.add_argument(
+        "--pro_four_tier_eval",
+        action="store_true",
+        dest="pro_four_tier_eval",
+        help="Four-tier decoupled eval (strict relevance, NLL rank, dual on top-N, J-only jailbreak)",
+    )
+    parser.add_argument("--pro_verifier_top_n", type=int, default=2, dest="pro_verifier_top_n")
+    parser.add_argument(
+        "--pro_rotate_explore_across_candidates",
+        action="store_true",
+        dest="pro_rotate_explore_across_candidates",
+        help="Rotate explore-strategy order + focus per PRO candidate (dynamic exploit_n + explore_n layout)",
+    )
+    parser.add_argument(
+        "--pro_per_candidate_strategy_bundles",
+        action="store_true",
+        dest="pro_per_candidate_strategy_bundles",
+        help="Resample explore strategies per candidate (shared exploit block; dynamic select + embeddings required)",
+    )
     parser.add_argument("--target_max_new_tokens", type=int, default=150)
     parser.add_argument("--nll_min", type=float, default=0.0)
     parser.add_argument("--nll_max", type=float, default=10.0)

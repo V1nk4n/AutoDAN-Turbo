@@ -80,7 +80,12 @@ def config():
     config.add_argument("--scorer_batch_size", type=int, default=2, help="Batch size for scorer model")
 
     config.add_argument("--pro_enabled", action='store_true', help="Enable PRO")
-    config.add_argument("--pro_n_candidates", type=int, default=4, help="Number of candidates for PRO")
+    config.add_argument(
+        "--pro_n_candidates",
+        type=int,
+        default=4,
+        help="Number of PRO candidates per wave (higher = more compute; for speed prefer lower, or raise --attack_batch_size / --pro_eval_batch_size to match)",
+    )
     config.add_argument("--pro_top_k", type=int, default=2, help="Top k candidates for PRO")
     config.add_argument("--pro_score_threshold", type=float, default=0.5, help="Score threshold for PRO")
     config.add_argument("--pro_repeat_shots_per_request", action='store_true',
@@ -104,6 +109,12 @@ def config():
     config.add_argument("--pro_explore_max_new_tokens", type=int, default=64, help="Target max_new_tokens during exploration phase")
     config.add_argument("--pro_exploit_max_new_tokens", type=int, default=128, help="Target max_new_tokens during exploitation phase")
     config.add_argument("--pro_enable_eval_cache", action='store_true', help="Enable prompt-level evaluation cache for PRO")
+    config.add_argument(
+        "--pro_eval_batch_size",
+        type=int,
+        default=2,
+        help="Target-side batch size for PRO batched decode/NLL (e.g. four_tier); set >= pro_n_candidates to decode all candidates in one batch when VRAM allows",
+    )
     config.add_argument("--pro_enable_fast_judge", action='store_true', help="Enable fast heuristic judge before dual scorer")
     config.add_argument("--pro_fast_judge_min_len", type=int, default=24, help="Minimum response length for fast judge")
     config.add_argument("--pro_enable_feedback_scheduler", action='store_true', help="Enable adaptive feedback scheduler with time budget")
@@ -220,6 +231,72 @@ def config():
         "--pro_verbose_pipeline_logs",
         action="store_true",
         help="Log PRO pipeline stages as one-line JSON (default: short human-readable summaries)",
+    )
+    config.add_argument(
+        "--pro_dynamic_pattern_select",
+        action="store_true",
+        dest="pro_dynamic_pattern_select",
+        help="Rank heuristics with req_sim + avg_score blend and epsilon-greedy top-k (needs embeddings)",
+    )
+    config.add_argument(
+        "--pro_pattern_exploit_n",
+        type=int,
+        default=3,
+        dest="pro_pattern_exploit_n",
+        help="Exploitation slots in dynamic pattern select (default 3 of 5)",
+    )
+    config.add_argument(
+        "--pro_pattern_explore_n",
+        type=int,
+        default=2,
+        dest="pro_pattern_explore_n",
+        help="Exploration slots in dynamic pattern select (default 2 of 5)",
+    )
+    config.add_argument(
+        "--pro_pattern_rank_w_avg",
+        type=float,
+        default=0.6,
+        dest="pro_pattern_rank_w_avg",
+        help="Weight on historical avg_score in dynamic blend (normalized in-rank)",
+    )
+    config.add_argument(
+        "--pro_pattern_rank_w_req",
+        type=float,
+        default=0.4,
+        dest="pro_pattern_rank_w_req",
+        help="Weight on request–example cosine (req_sim) in dynamic blend",
+    )
+    config.add_argument(
+        "--pro_pattern_explore_seed",
+        type=int,
+        default=None,
+        dest="pro_pattern_explore_seed",
+        help="RNG seed for exploration draws (optional, reproducibility)",
+    )
+    config.add_argument(
+        "--pro_four_tier_eval",
+        action="store_true",
+        dest="pro_four_tier_eval",
+        help="Decoupled 4-tier eval: strict relevance prune, NLL rank, dual judge on top-N only, J-only success",
+    )
+    config.add_argument(
+        "--pro_verifier_top_n",
+        type=int,
+        default=2,
+        dest="pro_verifier_top_n",
+        help="Max candidates sent to dual judge in four-tier mode (early-stop on first J=1)",
+    )
+    config.add_argument(
+        "--pro_rotate_explore_across_candidates",
+        action="store_true",
+        dest="pro_rotate_explore_across_candidates",
+        help="Per candidate slot, rotate order of explore strategies in RANKED_STRATEGIES (expects select_top_k_dynamic layout: exploit_n then explore_n)",
+    )
+    config.add_argument(
+        "--pro_per_candidate_strategy_bundles",
+        action="store_true",
+        dest="pro_per_candidate_strategy_bundles",
+        help="Dynamic select only: resample explore strategies per PRO candidate so each slot can use a different strategy set (shared exploit block)",
     )
     config.add_argument("--target_max_new_tokens", type=int, default=150, help="Maximum number of new tokens for target model")
     config.add_argument("--pattern_force_seed", action="store_true", help="Force seed for pattern manager")
@@ -374,7 +451,7 @@ def main() -> None:
         )
     # configure your own base model here
 
-    attacker = Attacker(model)
+    attacker = Attacker(model, attack_batch_size=args.attack_batch_size)
     summarizer = Summarizer(model)
     # repo_name = "google/gemma-1.1-7b-it"
     # config_name = "gemma-it"

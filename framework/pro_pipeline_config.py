@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 
 @dataclass
@@ -60,6 +60,22 @@ class ProPipelineConfig:
     # When False (default), pipeline_stage / PRO events log as short human-readable lines on the console.
     # When True, restore one-line JSON for machine parsing or deep debugging.
     pro_verbose_pipeline_logs: bool = False
+    # --- Optional "decoupled" PRO architecture (embedding rank + 4-tier eval + metadata) ---
+    # Dynamic pattern selection: final_score = w_avg*norm(avg_score) + w_req*req_sim; 3 exploit + 2 explore.
+    pro_dynamic_pattern_select: bool = False
+    pro_pattern_exploit_n: int = 3
+    pro_pattern_explore_n: int = 2
+    pro_pattern_rank_w_avg: float = 0.6
+    pro_pattern_rank_w_req: float = 0.4
+    pro_pattern_explore_seed: Optional[int] = None
+    # Four-tier evaluation: relevance (strict) → NLL score_loss sort → dual judge on top-N only →
+    # success = (J==1) with no S_quality = f(J, loss) hybrid. Incompatible with staged eval (staged skipped).
+    pro_four_tier_eval: bool = False
+    pro_verifier_top_n: int = 2
+    # Rotate explore order + focus per slot (same explore pair for the whole wave).
+    pro_rotate_explore_across_candidates: bool = False
+    # Resample explore per PRO candidate (shared exploit block); needs dynamic select + embeddings.
+    pro_per_candidate_strategy_bundles: bool = False
 
     def __post_init__(self) -> None:
         self.log_every = max(1, int(self.log_every))
@@ -88,6 +104,15 @@ class ProPipelineConfig:
         self.pro_staged_min_candidates_for_full_eval = max(1, int(self.pro_staged_min_candidates_for_full_eval))
         self.pro_staged_uncertainty_band = max(0.0, min(1.0, float(self.pro_staged_uncertainty_band)))
         self.pro_staged_eval_budget_ms = max(0.0, float(self.pro_staged_eval_budget_ms))
+        self.pro_pattern_exploit_n = max(0, int(self.pro_pattern_exploit_n))
+        self.pro_pattern_explore_n = max(0, int(self.pro_pattern_explore_n))
+        self.pro_pattern_rank_w_avg = max(0.0, min(1.0, float(self.pro_pattern_rank_w_avg)))
+        self.pro_pattern_rank_w_req = max(0.0, min(1.0, float(self.pro_pattern_rank_w_req)))
+        wsum = self.pro_pattern_rank_w_avg + self.pro_pattern_rank_w_req
+        if wsum > 1e-9:
+            self.pro_pattern_rank_w_avg = float(self.pro_pattern_rank_w_avg) / wsum
+            self.pro_pattern_rank_w_req = float(self.pro_pattern_rank_w_req) / wsum
+        self.pro_verifier_top_n = max(1, int(self.pro_verifier_top_n))
 
     @classmethod
     def from_argparse(cls, args: Any, *, target_model_key: str = "") -> ProPipelineConfig:
@@ -146,4 +171,18 @@ class ProPipelineConfig:
             pro_staged_weight_probe=float(getattr(args, "pro_staged_weight_probe", 0.65)),
             pro_staged_uncertainty_penalty=float(getattr(args, "pro_staged_uncertainty_penalty", 0.2)),
             pro_verbose_pipeline_logs=bool(getattr(args, "pro_verbose_pipeline_logs", False)),
+            pro_dynamic_pattern_select=bool(getattr(args, "pro_dynamic_pattern_select", False)),
+            pro_pattern_exploit_n=int(getattr(args, "pro_pattern_exploit_n", 3)),
+            pro_pattern_explore_n=int(getattr(args, "pro_pattern_explore_n", 2)),
+            pro_pattern_rank_w_avg=float(getattr(args, "pro_pattern_rank_w_avg", 0.6)),
+            pro_pattern_rank_w_req=float(getattr(args, "pro_pattern_rank_w_req", 0.4)),
+            pro_pattern_explore_seed=getattr(args, "pro_pattern_explore_seed", None),
+            pro_four_tier_eval=bool(getattr(args, "pro_four_tier_eval", False)),
+            pro_verifier_top_n=int(getattr(args, "pro_verifier_top_n", 2)),
+            pro_rotate_explore_across_candidates=bool(
+                getattr(args, "pro_rotate_explore_across_candidates", False),
+            ),
+            pro_per_candidate_strategy_bundles=bool(
+                getattr(args, "pro_per_candidate_strategy_bundles", False),
+            ),
         )

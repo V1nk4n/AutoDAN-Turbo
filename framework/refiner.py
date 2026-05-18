@@ -82,4 +82,4 @@ class Refiner():
             - Return ONLY the JSON object.
         """
         raw = self.model.generate(system, user, **kwargs)
-        return self._parse_refiner_json(raw)
+        return self._parse_refiner_json(raw)    

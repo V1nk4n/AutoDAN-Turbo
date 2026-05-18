@@ -19,12 +19,11 @@ class ProPipelineConfig:
     target_model_key: str = ""
     nll_min: float = 0.0
     nll_max: float = 10.0
-    repeat_shots_per_request: bool = False
+    # Deprecated: PRO always uses ``epochs`` as repeats-per-request. Kept for CLI compat.
+    repeat_shots_per_request: bool = True
     pro_early_stop_patience: int = 5
-    pro_early_stop_min_delta: float = 0.01
-    pro_refusal_streak_stop: int = 4
+    pro_early_stop_min_delta: float = 0.1
     pro_feedback_every: int = 2
-    pro_feedback_min_quality: float = 0.35
     pro_phase_split: float = 0.7
     pro_explore_n_candidates: int = 2
     pro_explore_top_k: int = 1
@@ -40,8 +39,6 @@ class ProPipelineConfig:
     pro_enable_fast_judge: bool = True
     pro_fast_judge_min_len: int = 24
     pro_enable_feedback_scheduler: bool = True
-    pro_feedback_budget_ms: float = 5000.0
-    pro_feedback_min_delta: float = 0.02
     pro_feedback_cooldown_repeats: int = 1
     pro_enable_strategy_embed_match: bool = True
     pro_strategy_embed_min_sim: float = 0.22
@@ -69,10 +66,10 @@ class ProPipelineConfig:
     pro_pattern_rank_w_req: float = 0.4
     pro_pattern_explore_seed: Optional[int] = None
     # Four-tier evaluation: relevance (strict) → NLL score_loss sort → dual judge on top-N only →
-    # success = (J==1) with no S_quality = f(J, loss) hybrid. Incompatible with staged eval (staged skipped).
+    # success = (J==1). Incompatible with staged eval (staged skipped).
     pro_four_tier_eval: bool = False
     pro_verifier_top_n: int = 2
-    # Rotate explore order + focus per slot (same explore pair for the whole wave).
+    # Rotate explore order + focus per slot (same explore pair for the whole repeat).
     pro_rotate_explore_across_candidates: bool = False
     # Resample explore per PRO candidate (shared exploit block); needs dynamic select + embeddings.
     pro_per_candidate_strategy_bundles: bool = False
@@ -80,7 +77,6 @@ class ProPipelineConfig:
     def __post_init__(self) -> None:
         self.log_every = max(1, int(self.log_every))
         self.pro_early_stop_patience = max(1, int(self.pro_early_stop_patience))
-        self.pro_refusal_streak_stop = max(1, int(self.pro_refusal_streak_stop))
         self.pro_feedback_every = max(1, int(self.pro_feedback_every))
         self.pro_phase_split = max(0.0, min(1.0, float(self.pro_phase_split)))
         self.pro_explore_n_candidates = max(1, int(self.pro_explore_n_candidates))
@@ -113,6 +109,15 @@ class ProPipelineConfig:
             self.pro_pattern_rank_w_avg = float(self.pro_pattern_rank_w_avg) / wsum
             self.pro_pattern_rank_w_req = float(self.pro_pattern_rank_w_req) / wsum
         self.pro_verifier_top_n = max(1, int(self.pro_verifier_top_n))
+        self.pro_early_stop_min_delta = self._normalize_score_loss_threshold(self.pro_early_stop_min_delta)
+
+    @staticmethod
+    def _normalize_score_loss_threshold(v: float) -> float:
+        """Map legacy 0–1 thresholds (e.g. 0.35) to score_loss 0–10 scale (3.5)."""
+        x = float(v)
+        if 0.0 < x <= 1.0:
+            return x * 10.0
+        return x
 
     @classmethod
     def from_argparse(cls, args: Any, *, target_model_key: str = "") -> ProPipelineConfig:
@@ -132,10 +137,8 @@ class ProPipelineConfig:
             nll_max=float(getattr(args, "nll_max", 10.0)),
             repeat_shots_per_request=bool(getattr(args, "pro_repeat_shots_per_request", False)),
             pro_early_stop_patience=int(getattr(args, "pro_early_stop_patience", 5)),
-            pro_early_stop_min_delta=float(getattr(args, "pro_early_stop_min_delta", 0.01)),
-            pro_refusal_streak_stop=int(getattr(args, "pro_refusal_streak_stop", 4)),
+            pro_early_stop_min_delta=float(getattr(args, "pro_early_stop_min_delta", 0.1)),
             pro_feedback_every=int(getattr(args, "pro_feedback_every", 2)),
-            pro_feedback_min_quality=float(getattr(args, "pro_feedback_min_quality", 0.35)),
             pro_phase_split=float(getattr(args, "pro_phase_split", 0.7)),
             pro_explore_n_candidates=int(getattr(args, "pro_explore_n_candidates", 2)),
             pro_explore_top_k=int(getattr(args, "pro_explore_top_k", 1)),
@@ -151,8 +154,6 @@ class ProPipelineConfig:
             pro_enable_fast_judge=bool(getattr(args, "pro_enable_fast_judge", True)),
             pro_fast_judge_min_len=int(getattr(args, "pro_fast_judge_min_len", 24)),
             pro_enable_feedback_scheduler=bool(getattr(args, "pro_enable_feedback_scheduler", True)),
-            pro_feedback_budget_ms=float(getattr(args, "pro_feedback_budget_ms", 5000.0)),
-            pro_feedback_min_delta=float(getattr(args, "pro_feedback_min_delta", 0.02)),
             pro_feedback_cooldown_repeats=int(getattr(args, "pro_feedback_cooldown_repeats", 1)),
             pro_enable_strategy_embed_match=strat_embed,
             pro_strategy_embed_min_sim=float(getattr(args, "pro_strategy_embed_min_sim", 0.22)),

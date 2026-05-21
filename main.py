@@ -313,11 +313,7 @@ def config():
         help="Per candidate slot, rotate order of explore strategies in RANKED_STRATEGIES (expects select_top_k_dynamic layout: exploit_n then explore_n)",
     )
     config.add_argument(
-        "--pro_per_candidate_strategy_bundles",
-        action="store_true",
-        dest="pro_per_candidate_strategy_bundles",
-        help="Dynamic select only: resample explore strategies per PRO candidate so each slot can use a different strategy set (shared exploit block)",
-    )
+        "--pro_per_candidy
     config.add_argument("--target_max_new_tokens", type=int, default=150, help="Maximum number of new tokens for target model")
     config.add_argument("--pattern_force_seed", action="store_true", help="Force seed for pattern manager")
     config.add_argument("--pattern_frozen", action="store_true", help="Freeze pattern manager")

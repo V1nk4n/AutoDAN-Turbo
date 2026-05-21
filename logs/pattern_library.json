@@ -185,7 +185,7 @@
         "avg_score": 0.0,
         "successful_models": {},
         "successful_library_rounds": [],
-        "trial_count": 6
+        "trial_count": 7
       },
       "history": []
     },
@@ -496,7 +496,7 @@
         "avg_score": 0.0,
         "successful_models": {},
         "successful_library_rounds": [],
-        "trial_count": 6
+        "trial_count": 5
       },
       "history": []
     },

@@ -12,6 +12,7 @@ from framework.feedback_scheduler import FeedbackScheduler
 from framework.pro_constants import (
     PRO_GENERATOR_RESPONSE_KEY,
     PRO_GENERATOR_STRATEGY_KEY,
+    PRO_GENERATOR_THOUGHT_KEY,
     PRO_PATTERN_LIBRARY_ROUND,
     PRO_PATTERN_SELECT_TOP_K,
     PRO_TIER1_SHORT_CIRCUIT_SCORE_LOSS,
@@ -801,13 +802,85 @@ class AutoDANTurboPro:
         parts = [p for p in (name, desc, kw_line) if p]
         return "\n".join(parts)
 
-    def _claimed_strategy_text_embedding_best(self, claimed_strategy_text: str, top_strategies: list) -> Tuple[Optional[str], float]:
-        """Best cosine match in ``top_strategies``; returns (sid or None if below min_sim, raw_best_sim)."""
+    _STRATEGY_CLAIM_PLACEHOLDERS = frozenset(
+        {"", "unspecified", "fallback", "n/a", "n_a", "none", "unknown"}
+    )
+
+    @staticmethod
+    def _normalize_strategy_match_key(text: str) -> str:
+        """Normalize strategy labels for exact id/name matching."""
+        return re.sub(r"[^a-z0-9]+", "_", str(text or "").strip().lower()).strip("_")
+
+    def _strategy_claim_is_empty(self, claimed: str) -> bool:
+        raw = str(claimed or "").strip().lower()
+        if raw in self._STRATEGY_CLAIM_PLACEHOLDERS:
+            return True
+        return self._normalize_strategy_match_key(claimed) in self._STRATEGY_CLAIM_PLACEHOLDERS
+
+    @staticmethod
+    def _normalize_prompt_for_match(prompt: Any) -> str:
+        """Canonical form for matching eval prompts to generator ``Response`` fields."""
+        return str(prompt or "").strip()
+
+    def _find_generator_record_for_prompt(
+        self, prompt: Any, structured_items: List[Any]
+    ) -> dict:
+        target = self._normalize_prompt_for_match(prompt)
+        if not target:
+            return {}
+        for g in structured_items or []:
+            if not isinstance(g, dict):
+                continue
+            resp = self._normalize_prompt_for_match(g.get(PRO_GENERATOR_RESPONSE_KEY))
+            if resp == target:
+                return g
+        return {}
+
+    def _extract_strategy_claim_from_record(self, generator_record: dict) -> Tuple[str, str]:
+        """Return (primary_claim, claim_source) from structured generator output."""
+        if not isinstance(generator_record, dict):
+            return "", "none"
+        strategy_raw = str(generator_record.get(PRO_GENERATOR_STRATEGY_KEY, "") or "").strip()
+        if not self._strategy_claim_is_empty(strategy_raw):
+            return strategy_raw, "strategy_field"
+        thought_raw = str(generator_record.get(PRO_GENERATOR_THOUGHT_KEY, "") or "").strip()
+        if thought_raw and thought_raw.lower() != "(no reasoning provided)":
+            return thought_raw[:500], "thought_field"
+        return "", "none"
+
+    def _thought_excerpt_for_summarize(self, thought: str) -> str:
+        """Short Thought excerpt for slow-path naming when ``<Strategy>`` is missing."""
+        t = str(thought or "").strip()
+        if not t or t.lower() == "(no reasoning provided)":
+            return ""
+        if t.lower().startswith("fallback:"):
+            return ""
+        first_line = t.split("\n", 1)[0].strip()
+        excerpt = first_line.split(". ", 1)[0].strip()[:160]
+        return excerpt if len(excerpt) >= 8 else ""
+
+    def _generator_label_for_summarize(self, generator_record: dict) -> Tuple[str, str]:
+        """Label hint for slow path: ``<Strategy>`` first, else short ``<Thought>`` excerpt."""
+        if not isinstance(generator_record, dict):
+            return "", "none"
+        raw = str(generator_record.get(PRO_GENERATOR_STRATEGY_KEY, "") or "").strip()
+        if not self._strategy_claim_is_empty(raw):
+            return raw[:160], "strategy_field"
+        thought_excerpt = self._thought_excerpt_for_summarize(
+            str(generator_record.get(PRO_GENERATOR_THOUGHT_KEY, "") or "")
+        )
+        if thought_excerpt:
+            return thought_excerpt, "thought_excerpt"
+        return "", "none"
+
+    def _claimed_strategy_text_embedding_best(
+        self, claimed_strategy_text: str, top_strategies: Optional[list] = None
+    ) -> Tuple[Optional[str], float]:
+        """Best cosine match across the full pattern library (ranked ids first)."""
         if (
             not self.pro_enable_strategy_embed_match
             or self.retrieval is None
             or not self.pattern_manager
-            or not top_strategies
         ):
             return None, -2.0
         raw = str(claimed_strategy_text or "").strip()
@@ -816,12 +889,22 @@ class AutoDANTurboPro:
         strategy_text_emb = self._embed_with_cache(raw[:2000])
         if strategy_text_emb is None:
             return None, -2.0
+
+        seen: set = set()
+        candidate_sids: List[str] = []
+        for ts in top_strategies or []:
+            sid = str(ts.get("strategy_id") or "").strip()
+            if sid and sid not in seen:
+                seen.add(sid)
+                candidate_sids.append(sid)
+        for sid in self.pattern_manager.strategies:
+            if sid not in seen:
+                seen.add(sid)
+                candidate_sids.append(sid)
+
         best_sid: Optional[str] = None
         best_sim = -2.0
-        for ts in top_strategies:
-            sid = str(ts.get("strategy_id") or "").strip()
-            if not sid:
-                continue
+        for sid in candidate_sids:
             profile = self._build_strategy_profile_text(sid)
             if not profile:
                 continue
@@ -837,7 +920,7 @@ class AutoDANTurboPro:
         return None, best_sim
 
     def _resolve_strategy_id_by_embedding(self, claimed_strategy_text: str, top_strategies: list) -> Optional[str]:
-        """Pick ``strategy_id`` from ``top_strategies`` by embedding cosine similarity."""
+        """Pick ``strategy_id`` from the pattern library by embedding cosine similarity."""
         sid, _ = self._claimed_strategy_text_embedding_best(claimed_strategy_text, top_strategies)
         return sid
 
@@ -1536,87 +1619,103 @@ class AutoDANTurboPro:
         self,
         generator_record: dict,
         top_strategies: list,
-        *,
-        allow_fallback: bool = True,
     ) -> Optional[str]:
-        """Map a generator JSON record to a ``strategy_id`` in the pattern library.
+        """Map a generator record to one ``strategy_id`` in the pattern library.
 
         Resolution order:
-          1) Exact (case-insensitive) match of ``Strategy`` field to a strategy ``name``
-             (full library scan).
-          2) If retrieval is available and ``pro_enable_strategy_embed_match``:
-             embed ``Strategy`` text vs profiles of ``top_strategies`` only;
-             pick best if similarity ≥ ``pro_strategy_embed_min_sim``.
-          3) Fallback: ``top_strategies[0].strategy_id`` when ``allow_fallback`` (logged as WARNING).
+          1) Exact ``strategy_id`` match (normalized) across full library.
+          2) Exact ``name`` match (case-insensitive) across full library.
+          3) Embedding match vs full library (ranked strategies searched first);
+             accept if similarity ≥ ``pro_strategy_embed_min_sim``.
+          4) ``no_match`` → ``None`` (jailbreak may trigger summarizer slow path).
 
-        Logs structured lines with prefix ``[PRO] strategy_resolution`` for
-        traceability and variance control across runs.
+        Logs structured lines with prefix ``[PRO] strategy_resolution``.
         """
-        claimed_strategy_raw = ""
-        if isinstance(generator_record, dict):
-            claimed_strategy_raw = str(
-                generator_record.get(PRO_GENERATOR_STRATEGY_KEY, "") or ""
-            ).strip()
-        wanted = claimed_strategy_raw.lower()
+        claimed_strategy_raw, claim_source = self._extract_strategy_claim_from_record(
+            generator_record
+        )
+        preview = claimed_strategy_raw[:120] if claimed_strategy_raw else "(empty_claim)"
         top_ids = [str(s.get("strategy_id")) for s in (top_strategies or [])[:8]]
 
-        if self.pattern_manager and wanted:
-            for sid, info in self.pattern_manager.strategies.items():
-                if str(info.get("name", "")).strip().lower() == wanted:
-                    self.logger.info(
-                        "[PRO] strategy_resolution method=exact_name strategy_id=%s strategy_preview=%s",
-                        sid,
-                        claimed_strategy_raw[:120],
-                    )
-                    return sid
-            emb_sid, best_sim = self._claimed_strategy_text_embedding_best(
-                claimed_strategy_raw, top_strategies
-            )
-            if emb_sid:
-                self.logger.info(
-                    "[PRO] strategy_resolution method=embedding strategy_id=%s best_sim=%.4f min_sim=%.4f strategy_preview=%s",
-                    emb_sid,
-                    best_sim,
-                    self.pro_strategy_embed_min_sim,
-                    claimed_strategy_raw[:120],
-                )
-                return emb_sid
-            if self.pro_enable_strategy_embed_match and top_strategies:
-                self.logger.info(
-                    "[PRO] strategy_resolution embedding_miss best_sim=%.4f min_sim=%.4f top_strategy_ids=%s strategy_preview=%s",
-                    best_sim,
-                    self.pro_strategy_embed_min_sim,
-                    top_ids,
-                    claimed_strategy_raw[:120],
-                )
-
-        if top_strategies and allow_fallback:
-            sid = top_strategies[0].get("strategy_id")
-            out = sid if sid else None
-            preview = claimed_strategy_raw[:120] if claimed_strategy_raw else "(empty_strategy_field)"
-            self.logger.warning(
-                "[PRO] strategy_resolution method=fallback_top1 strategy_id=%s top_strategy_ids=%s strategy_preview=%s",
-                out,
-                top_ids,
-                preview,
-            )
-            return out
-        if top_strategies and not allow_fallback:
-            preview = claimed_strategy_raw[:120] if claimed_strategy_raw else "(empty_strategy_field)"
-            self.logger.warning(
-                "[PRO] strategy_resolution method=none (no fallback on jailbreak) top_strategy_ids=%s strategy_preview=%s",
+        if not self.pattern_manager or self._strategy_claim_is_empty(claimed_strategy_raw):
+            self.logger.info(
+                "[PRO] strategy_resolution method=no_match claim_source=%s top_strategy_ids=%s strategy_preview=%s",
+                claim_source,
                 top_ids,
                 preview,
             )
             return None
-        if wanted and self.pattern_manager:
-            self.logger.warning(
-                "[PRO] strategy_resolution method=none (empty top_strategies) strategy_preview=%s",
-                claimed_strategy_raw[:120],
+
+        wanted_key = self._normalize_strategy_match_key(claimed_strategy_raw)
+
+        for sid, info in self.pattern_manager.strategies.items():
+            if self._normalize_strategy_match_key(sid) == wanted_key:
+                self.logger.info(
+                    "[PRO] strategy_resolution method=exact_id claim_source=%s strategy_id=%s strategy_preview=%s",
+                    claim_source,
+                    sid,
+                    preview,
+                )
+                return sid
+
+        wanted_name = claimed_strategy_raw.lower()
+        for sid, info in self.pattern_manager.strategies.items():
+            if str(info.get("name", "")).strip().lower() == wanted_name:
+                self.logger.info(
+                    "[PRO] strategy_resolution method=exact_name claim_source=%s strategy_id=%s strategy_preview=%s",
+                    claim_source,
+                    sid,
+                    preview,
+                )
+                return sid
+            if self._normalize_strategy_match_key(info.get("name", "")) == wanted_key:
+                self.logger.info(
+                    "[PRO] strategy_resolution method=exact_name_normalized claim_source=%s strategy_id=%s strategy_preview=%s",
+                    claim_source,
+                    sid,
+                    preview,
+                )
+                return sid
+
+        emb_sid, best_sim = self._claimed_strategy_text_embedding_best(
+            claimed_strategy_raw, top_strategies
+        )
+        if emb_sid:
+            self.logger.info(
+                "[PRO] strategy_resolution method=embedding claim_source=%s strategy_id=%s best_sim=%.4f min_sim=%.4f strategy_preview=%s",
+                claim_source,
+                emb_sid,
+                best_sim,
+                self.pro_strategy_embed_min_sim,
+                preview,
+            )
+            return emb_sid
+
+        if self.pro_enable_strategy_embed_match:
+            self.logger.info(
+                "[PRO] strategy_resolution method=no_match claim_source=%s embedding_miss best_sim=%.4f min_sim=%.4f top_strategy_ids=%s strategy_preview=%s",
+                claim_source,
+                best_sim,
+                self.pro_strategy_embed_min_sim,
+                top_ids,
+                preview,
+            )
+        else:
+            self.logger.info(
+                "[PRO] strategy_resolution method=no_match claim_source=%s embed_disabled top_strategy_ids=%s strategy_preview=%s",
+                claim_source,
+                top_ids,
+                preview,
             )
         return None
 
-    def _summarize_new_strategy(self, request, prompt_used):
+    def _summarize_new_strategy(
+        self,
+        request,
+        prompt_used,
+        generator_strategy_claim: str = "",
+        generator_label_source: str = "none",
+    ):
         strategy_library: Dict[str, Any] = {}
         if self.pattern_manager:
             for sid, info in self.pattern_manager.strategies.items():
@@ -1640,16 +1739,33 @@ class AutoDANTurboPro:
                     "Definition": str(info.get("description", "") or ""),
                 }
 
+        label = str(generator_strategy_claim or "").strip()
+        summarize_kw: Dict[str, Any] = {}
+        if label and not self._strategy_claim_is_empty(label):
+            summarize_kw["generator_strategy_label"] = label
+            summarize_kw["generator_strategy_label_source"] = str(
+                generator_label_source or "none"
+            )
+
         try:
             raw = self.summarizer.summarize(
                 request=request,
                 jailbreak_prompt_1=request,
                 jailbreak_prompt_2=prompt_used,
                 strategy_library=strategy_library,
+                **summarize_kw,
             )
         except TypeError:
             raw = self.summarizer.summarize(request=request, prompt=prompt_used)
-        return self._extract_strategy_payload(raw)
+        payload = self._extract_strategy_payload(raw)
+        if (
+            label
+            and not self._strategy_claim_is_empty(label)
+            and isinstance(payload, dict)
+            and not str(payload.get("name") or "").strip()
+        ):
+            payload["name"] = label[:160]
+        return payload
 
     def _repeat_attack_select_pattern_strategies(
         self,
@@ -1839,6 +1955,8 @@ class AutoDANTurboPro:
                 "total_decodes": int(gen_meta.get("total_decodes") or 0),
                 "generated_n": int(gen_meta.get("generated_n") or 0),
                 "valid_n": int(gen_meta.get("valid_n") or 0),
+                "parser_goal_fallback": bool(gen_meta.get("parser_goal_fallback")),
+                "extraction_stage_counts": dict(gen_meta.get("extraction_stage_counts") or {}),
                 "candidate_previews": [
                     (
                         str(g.get(PRO_GENERATOR_RESPONSE_KEY, ""))[:120]
@@ -1849,6 +1967,13 @@ class AutoDANTurboPro:
                 ],
             },
         )
+        if gen_meta.get("parser_goal_fallback"):
+            self.logger.warning(
+                "[PRO] parser_goal_fallback: no structured decode succeeded; injected raw goal as Response "
+                "(parse_failed=%s reject_reason_counts=%s)",
+                gen_meta.get("parse_failed"),
+                gen_meta.get("reject_reason_counts"),
+            )
         if n_nonempty < int(self.pro_n_candidates):
             self.logger.warning(
                 "[PRO] generate_candidates: only %d/%d nonempty (parse_failed=%s valid_n=%s reject_reason_counts=%s)",
@@ -2104,21 +2229,18 @@ class AutoDANTurboPro:
         best_candidate: Dict[str, Any],
         structured_items: List[Any],
         top_strategies: list,
-        *,
-        allow_fallback: bool = True,
     ) -> Optional[str]:
-        bp = best_candidate.get("prompt", "")
-        generator_record = next(
-            (
-                g
-                for g in structured_items
-                if isinstance(g, dict) and g.get(PRO_GENERATOR_RESPONSE_KEY) == bp
-            ),
-            {},
+        prompt = best_candidate.get("prompt", "")
+        generator_record = self._find_generator_record_for_prompt(
+            prompt, structured_items
         )
-        return self._resolve_strategy_id(
-            generator_record, top_strategies, allow_fallback=allow_fallback
-        )
+        if not generator_record and structured_items:
+            self.logger.warning(
+                "[PRO] generator_record_miss prompt_preview=%s n_structured=%d",
+                str(prompt or "")[:120],
+                len(structured_items),
+            )
+        return self._resolve_strategy_id(generator_record, top_strategies)
 
     def _repeat_attack_pattern_save_attempt_on_failure(
         self,
@@ -2155,10 +2277,18 @@ class AutoDANTurboPro:
         library_round: int,
         step_time_by_stage: Dict[str, float],
         request_time_by_stage: Dict[str, float],
+        *,
+        structured_items: Optional[List[Any]] = None,
     ) -> None:
         if not best_candidate["is_jailbroken"]:
             return
         prompt_used = best_candidate.get("prompt", "")
+        generator_record = self._find_generator_record_for_prompt(
+            prompt_used, structured_items or []
+        )
+        generator_strategy_claim, generator_label_source = self._generator_label_for_summarize(
+            generator_record
+        )
         matched_id = None
         if not self.pattern_manager:
             return
@@ -2221,10 +2351,17 @@ class AutoDANTurboPro:
             )
         else:
             try:
+                self.logger.info(
+                    "[PRO] slow_path_summarize generator_label_source=%s label_preview=%s",
+                    generator_label_source,
+                    (generator_strategy_claim or "")[:120] or "(empty)",
+                )
                 (new_strategy_json, elapsed_summarize_ms) = self._time_call(
                     self._summarize_new_strategy,
                     request,
                     prompt_used,
+                    generator_strategy_claim,
+                    generator_label_source,
                 )
                 step_time_by_stage["pattern_match_or_summarize"] += elapsed_summarize_ms
                 request_time_by_stage["pattern_match_or_summarize"] += elapsed_summarize_ms
@@ -2445,7 +2582,6 @@ class AutoDANTurboPro:
             best_candidate,
             structured_items,
             top_strategies,
-            allow_fallback=not success,
         )
 
         self._repeat_attack_pattern_save_attempt_on_failure(
@@ -2461,6 +2597,7 @@ class AutoDANTurboPro:
             library_round,
             step_time_by_stage,
             request_time_by_stage,
+            structured_items=structured_items,
         )
 
         self._repeat_attack_log_summary(

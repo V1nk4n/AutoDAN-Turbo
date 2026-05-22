@@ -149,7 +149,12 @@ def config():
         "--pro_strategy_embed_min_sim",
         type=float,
         default=0.22,
-        help="Minimum cosine similarity (vs name+description+keywords profile) to accept embedding-based strategy_id",
+        help="Minimum cosine similarity for prompt-to-strategy attribution and legacy Strategy-field embedding match",
+    )
+    config.add_argument(
+        "--pro_disable_prompt_strategy_attribution",
+        action="store_true",
+        help="Disable prompt-embedding attribution for save_attempt/save_success; use legacy single Strategy resolution",
     )
     config.add_argument(
         "--pro_goal_similarity_floor",
@@ -253,6 +258,17 @@ def config():
         help="Log PRO pipeline stages as one-line JSON (default: short human-readable summaries)",
     )
     config.add_argument(
+        "--pro_disable_threshold_telemetry",
+        action="store_true",
+        help="Disable JSONL threshold telemetry (pro_threshold_telemetry.jsonl in per-run log dir)",
+    )
+    config.add_argument(
+        "--pro_telemetry_jsonl",
+        type=str,
+        default=None,
+        help="Override path for threshold telemetry JSONL (default: logs/logs_per_run/<run>/pro_threshold_telemetry.jsonl)",
+    )
+    config.add_argument(
         "--pro_dynamic_pattern_select",
         action="store_true",
         dest="pro_dynamic_pattern_select",
@@ -273,18 +289,25 @@ def config():
         help="Exploration slots in dynamic pattern select (default 2 of 5)",
     )
     config.add_argument(
+        "--pro_pattern_rank_w_rate",
+        type=float,
+        default=0.3,
+        dest="pro_pattern_rank_w_rate",
+        help="Weight on success rate (freq/trial_count) in dynamic S_rank blend",
+    )
+    config.add_argument(
         "--pro_pattern_rank_w_avg",
         type=float,
-        default=0.6,
+        default=0.3,
         dest="pro_pattern_rank_w_avg",
-        help="Weight on historical avg_score in dynamic blend (normalized in-rank)",
+        help="Weight on historical avg_score in dynamic S_rank blend",
     )
     config.add_argument(
         "--pro_pattern_rank_w_req",
         type=float,
         default=0.4,
         dest="pro_pattern_rank_w_req",
-        help="Weight on request–example cosine (req_sim) in dynamic blend",
+        help="Weight on request–example cosine (req_sim) in dynamic S_rank blend",
     )
     config.add_argument(
         "--pro_pattern_explore_seed",
@@ -313,7 +336,11 @@ def config():
         help="Per candidate slot, rotate order of explore strategies in RANKED_STRATEGIES (expects select_top_k_dynamic layout: exploit_n then explore_n)",
     )
     config.add_argument(
-        "--pro_per_candidy
+        "--pro_per_candidate_strategy_bundles",
+        action="store_true",
+        dest="pro_per_candidate_strategy_bundles",
+        help="Resample explore strategies per candidate (shared exploit block; dynamic select + embeddings required)",
+    )
     config.add_argument("--target_max_new_tokens", type=int, default=150, help="Maximum number of new tokens for target model")
     config.add_argument("--pattern_force_seed", action="store_true", help="Force seed for pattern manager")
     config.add_argument("--pattern_frozen", action="store_true", help="Freeze pattern manager")
@@ -552,12 +579,17 @@ def main() -> None:
         'pattern_manager': pattern_manager
     }
     if args.pro_enabled:
+        telemetry_path = getattr(args, "pro_telemetry_jsonl", None) or os.path.join(
+            per_run_dir, "pro_threshold_telemetry.jsonl"
+        )
         pro_cfg = replace(
             ProPipelineConfig.from_argparse(args, target_model_key=repo_name),
             epochs=epochs,
             warm_up_iterations=warm_up_iterations,
             lifelong_iterations=1,
+            pro_telemetry_jsonl=telemetry_path,
         )
+        logger.info("PRO threshold telemetry: %s", telemetry_path)
         autodan_turbo_pipeline = AutoDANTurboPro(
             turbo_framework=attack_kit,
             data=data,
@@ -584,30 +616,37 @@ def main() -> None:
     else:
         suffix = ''
     pipeline_run_start = time.perf_counter()
-    if args.hot_lifelong:
-        warm_up_strategy_library = pickle.load(open(f'./logs/warm_up_strategy_library.pkl', 'rb'))
-        warm_up_attack_log = json.load(open(f'./logs/warm_up_attack_log.json', 'r'))
-        warm_up_summarizer_log = json.load(open(f'./logs/warm_up_summarizer_log.json', 'r'))
-        autodan_turbo_pipeline.hot_start_lifelong(warm_up_attack_log)
-    else:
-        if args.hot:
-            init_attack_log = json.load(open(f'./logs/warm_up_attack_log{suffix}.json', 'r'))
-            warm_up_strategy_library, warm_up_attack_log, warm_up_summarizer_log = autodan_turbo_pipeline.hot_start(init_attack_log)
+    warm_up_strategy_library_file = f'./logs/warm_up_strategy_library{suffix}.json'
+    warm_up_strategy_library_pkl = f'./logs/warm_up_strategy_library{suffix}.pkl'
+    warm_up_attack_log_file = f'./logs/warm_up_attack_log{suffix}.json'
+    warm_up_summarizer_log_file = f'./logs/warm_up_summarizer_log{suffix}.json'
+
+    if args.only_lifelong is None:
+        if args.hot_lifelong:
+            warm_up_strategy_library = pickle.load(open(warm_up_strategy_library_pkl, 'rb'))
+            warm_up_attack_log = json.load(open(warm_up_attack_log_file, 'r'))
+            warm_up_summarizer_log = json.load(open(warm_up_summarizer_log_file, 'r'))
+            autodan_turbo_pipeline.hot_start_lifelong(warm_up_attack_log)
         else:
-            warm_up_strategy_library, warm_up_attack_log, warm_up_summarizer_log = autodan_turbo_pipeline.warm_up(init_library, init_attack_log, init_summarizer_log)
+            if args.hot:
+                init_attack_log = json.load(open(warm_up_attack_log_file, 'r'))
+                warm_up_strategy_library, warm_up_attack_log, warm_up_summarizer_log = autodan_turbo_pipeline.hot_start(init_attack_log)
+            else:
+                warm_up_strategy_library, warm_up_attack_log, warm_up_summarizer_log = autodan_turbo_pipeline.warm_up(init_library, init_attack_log, init_summarizer_log)
 
-        warm_up_wall_ms = (time.perf_counter() - pipeline_run_start) * 1000.0
+            warm_up_wall_ms = (time.perf_counter() - pipeline_run_start) * 1000.0
+            logger.info(
+                "[PRO timing] warm_up_phase_complete wall_ms=%.1f wall_human=%s",
+                warm_up_wall_ms,
+                _format_duration_ms(warm_up_wall_ms),
+            )
+
+            save_data(logger, warm_up_strategy_library, warm_up_attack_log, warm_up_summarizer_log, warm_up_strategy_library_file, warm_up_strategy_library_pkl, warm_up_attack_log_file, warm_up_summarizer_log_file)
+    else:
         logger.info(
-            "[PRO timing] warm_up_phase_complete wall_ms=%.1f wall_human=%s",
-            warm_up_wall_ms,
-            _format_duration_ms(warm_up_wall_ms),
+            "Skipping warm-up (--only_lifelong %d); loading saved state in lifelong phase",
+            args.only_lifelong,
         )
-
-        warm_up_strategy_library_file = f'./logs/warm_up_strategy_library{suffix}.json'
-        warm_up_strategy_library_pkl = f'./logs/warm_up_strategy_library{suffix}.pkl'
-        warm_up_attack_log_file = f'./logs/warm_up_attack_log{suffix}.json'
-        warm_up_summarizer_log_file = f'./logs/warm_up_summarizer_log{suffix}.json'
-        save_data(logger, warm_up_strategy_library, warm_up_attack_log, warm_up_summarizer_log, warm_up_strategy_library_file, warm_up_strategy_library_pkl, warm_up_attack_log_file, warm_up_summarizer_log_file)
 
     # ✅ If only_warm_up flag is set, exit after warm_up
     if args.only_warm_up:
@@ -625,7 +664,7 @@ def main() -> None:
         logger.info(f"  - {warm_up_summarizer_log_file}")
         exit(0)
 
-    epoch_memory_file = './logs/epoch_refine_memory.json'
+    epoch_memory_file = "./logs/epoch_refine_memory.json"
     lifelong_strategy_library_file = f'./logs/lifelong_strategy_library{suffix}.json'
     lifelong_strategy_library_pkl = f'./logs/lifelong_strategy_library{suffix}.pkl'
     lifelong_attack_log_file = f'./logs/lifelong_attack_log{suffix}.json'
@@ -637,52 +676,94 @@ def main() -> None:
         if iteration_num < 1:
             logger.error(f"Invalid iteration number: {iteration_num}. Must be >= 1")
             exit(1)
-        
+
+        if os.path.exists(epoch_memory_file):
+            epoch_memory = json.load(open(epoch_memory_file, 'r', encoding='utf-8'))
+            if not isinstance(epoch_memory, dict):
+                epoch_memory = {"global_refine_hints": [], "failure_patterns": {}, "last_iteration": 0}
+            epoch_memory.setdefault("global_refine_hints", [])
+            epoch_memory.setdefault("failure_patterns", {})
+            epoch_memory.setdefault("last_iteration", 0)
+        else:
+            epoch_memory = {
+                "global_refine_hints": [],
+                "failure_patterns": {},
+                "last_iteration": 0,
+            }
+
         logger.info(f"Running only lifelong iteration {iteration_num} (--only_lifelong {iteration_num})")
-        
+
         if iteration_num == 1:
-            # Iteration 1: load from warm_up results
             if not os.path.exists(warm_up_strategy_library_pkl):
                 logger.error(f"Warm-up results not found at {warm_up_strategy_library_pkl}!")
                 logger.error("Please run warm-up first (use --only_warm_up or run without --only_lifelong)")
                 exit(1)
-            
+
             logger.info(f"Loading warm-up results from {warm_up_strategy_library_pkl}")
             warm_up_strategy_library = pickle.load(open(warm_up_strategy_library_pkl, 'rb'))
             warm_up_attack_log = json.load(open(warm_up_attack_log_file, 'r'))
             warm_up_summarizer_log = json.load(open(warm_up_summarizer_log_file, 'r'))
-            
+            prev_len = 0
+            _hint = AutoDANTurboPro.build_epoch_refine_hint_from_memory(epoch_memory)
+            autodan_turbo_pipeline.set_epoch_refine_hint(_hint)
+            if _hint:
+                logger.info("Epoch refine hint set (len=%d) before lifelong iteration %d", len(_hint), iteration_num)
+
             lifelong_strategy_library, lifelong_attack_log, lifelong_summarizer_log = autodan_turbo_pipeline.lifelong_redteaming(
                 warm_up_strategy_library, warm_up_attack_log, warm_up_summarizer_log
             )
         else:
-            # Iteration 2+: load from previous lifelong iteration
-            prev_library_file = lifelong_strategy_library_pkl
-            prev_attack_log_file = lifelong_attack_log_file
-            prev_summarizer_log_file = lifelong_summarizer_log_file
-            
-            if not os.path.exists(prev_library_file):
-                logger.error(f"Previous lifelong iteration results not found at {prev_library_file}!")
+            if not os.path.exists(lifelong_strategy_library_pkl):
+                logger.error(f"Previous lifelong iteration results not found at {lifelong_strategy_library_pkl}!")
                 logger.error(f"Please run iteration {iteration_num - 1} first")
                 exit(1)
-            
-            logger.info(f"Loading previous lifelong iteration results from {prev_library_file}")
-            lifelong_strategy_library = pickle.load(open(prev_library_file, 'rb'))
-            lifelong_attack_log = json.load(open(prev_attack_log_file, 'r'))
-            lifelong_summarizer_log = json.load(open(prev_summarizer_log_file, 'r'))
-            
+
+            logger.info(f"Loading previous lifelong iteration results from {lifelong_strategy_library_pkl}")
+            lifelong_strategy_library = pickle.load(open(lifelong_strategy_library_pkl, 'rb'))
+            lifelong_attack_log = json.load(open(lifelong_attack_log_file, 'r'))
+            lifelong_summarizer_log = json.load(open(lifelong_summarizer_log_file, 'r'))
+            prev_len = len(lifelong_attack_log)
+            _hint = AutoDANTurboPro.build_epoch_refine_hint_from_memory(epoch_memory)
+            autodan_turbo_pipeline.set_epoch_refine_hint(_hint)
+            if _hint:
+                logger.info("Epoch refine hint set (len=%d) before lifelong iteration %d", len(_hint), iteration_num)
+
             lifelong_strategy_library, lifelong_attack_log, lifelong_summarizer_log = autodan_turbo_pipeline.lifelong_redteaming(
                 lifelong_strategy_library, lifelong_attack_log, lifelong_summarizer_log
             )
-        
-        save_data(logger, lifelong_strategy_library, lifelong_attack_log, lifelong_summarizer_log, 
-                 lifelong_strategy_library_file, lifelong_strategy_library_pkl, 
+
+        save_data(logger, lifelong_strategy_library, lifelong_attack_log, lifelong_summarizer_log,
+                 lifelong_strategy_library_file, lifelong_strategy_library_pkl,
                  lifelong_attack_log_file, lifelong_summarizer_log_file)
+
+        new_logs = lifelong_attack_log[prev_len:]
+        for row in new_logs:
+            rv = str(row.get("last_refined_variable", "") or "").strip()
+            if rv:
+                epoch_memory["global_refine_hints"].append(rv)
+            fb = row.get("last_feedback", None)
+            if isinstance(fb, dict):
+                pat = str(fb.get("Pattern_observed", "")).strip()
+                if pat:
+                    epoch_memory["failure_patterns"][pat] = epoch_memory["failure_patterns"].get(pat, 0) + 1
+        epoch_memory["global_refine_hints"] = epoch_memory["global_refine_hints"][-200:]
+        epoch_memory["last_iteration"] = iteration_num
+        with open(epoch_memory_file, 'w', encoding='utf-8') as f:
+            json.dump(epoch_memory, f, indent=2)
+
+        only_lifelong_ms = (time.perf_counter() - pipeline_run_start) * 1000.0
+        logger.info(
+            "[PRO timing] pipeline_run_complete (only_lifelong %d) wall_ms=%.1f wall_human=%s",
+            iteration_num,
+            only_lifelong_ms,
+            _format_duration_ms(only_lifelong_ms),
+        )
         logger.info(f"✅ Lifelong iteration {iteration_num} completed. Results saved to:")
         logger.info(f"  - {lifelong_strategy_library_file}")
         logger.info(f"  - {lifelong_strategy_library_pkl}")
         logger.info(f"  - {lifelong_attack_log_file}")
         logger.info(f"  - {lifelong_summarizer_log_file}")
+        logger.info(f"  - {epoch_memory_file}")
         exit(0)
 
 

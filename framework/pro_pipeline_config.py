@@ -38,13 +38,15 @@ class ProPipelineConfig:
     pro_eval_cache_max_entries: int = 4096
     pro_enable_fast_judge: bool = True
     pro_fast_judge_min_len: int = 24
+    pro_tier1_min_response_chars: int = 10
     pro_enable_feedback_scheduler: bool = True
     pro_feedback_cooldown_repeats: int = 1
     pro_enable_strategy_embed_match: bool = True
-    pro_strategy_embed_min_sim: float = 0.22
-    # Credit library strategies by embedding the jailbreak prompt vs bundle strategies used to generate it.
+    pro_strategy_embed_min_sim: float = 0.28
+    pro_strategy_embed_min_margin: float = 0.05
     pro_enable_prompt_strategy_attribution: bool = True
     pro_goal_similarity_floor: float = 0.15
+    pro_goal_prune_relative_ratio: float = 0.90
     pro_staged_eval_enabled: bool = False
     pro_staged_eval_profile: str = "balanced"
     pro_staged_filter_keep_ratio: float = 0.5
@@ -56,28 +58,21 @@ class ProPipelineConfig:
     pro_staged_weight_filter: float = 0.35
     pro_staged_weight_probe: float = 0.65
     pro_staged_uncertainty_penalty: float = 0.2
-    # When False (default), pipeline_stage / PRO events log as short human-readable lines on the console.
-    # When True, restore one-line JSON for machine parsing or deep debugging.
     pro_verbose_pipeline_logs: bool = False
-    # Append-only JSONL for threshold tuning (see scripts/analyze_pro_thresholds.py).
     pro_enable_threshold_telemetry: bool = True
     pro_telemetry_jsonl: Optional[str] = None
-    # --- Optional "decoupled" PRO architecture (embedding rank + 4-tier eval + metadata) ---
-    # Dynamic pattern selection: S_rank = w_rate*norm(rate) + w_avg*norm(avg_score) + w_req*norm(req_sim).
     pro_dynamic_pattern_select: bool = False
     pro_pattern_exploit_n: int = 3
     pro_pattern_explore_n: int = 2
-    pro_pattern_rank_w_rate: float = 0.3
-    pro_pattern_rank_w_avg: float = 0.3
-    pro_pattern_rank_w_req: float = 0.4
+    pro_pattern_rank_w_rate: float = 0.25
+    pro_pattern_rank_w_avg: float = 0.25
+    pro_pattern_rank_w_req: float = 0.50
+    pro_pattern_rank_low_rate_penalty: float = 0.85
+    pro_pattern_rank_low_rate_min_trials: int = 3
     pro_pattern_explore_seed: Optional[int] = None
-    # Four-tier evaluation: relevance (strict) → NLL score_loss sort → dual judge on top-N only →
-    # success = (J==1). Incompatible with staged eval (staged skipped).
     pro_four_tier_eval: bool = False
     pro_verifier_top_n: int = 2
-    # Rotate explore order + focus per slot (same explore pair for the whole repeat).
     pro_rotate_explore_across_candidates: bool = False
-    # Resample explore per PRO candidate (shared exploit block); needs dynamic select + embeddings.
     pro_per_candidate_strategy_bundles: bool = False
 
     def __post_init__(self) -> None:
@@ -93,9 +88,14 @@ class ProPipelineConfig:
         self.pro_exploit_max_new_tokens = max(1, int(self.pro_exploit_max_new_tokens))
         self.pro_retrieval_cache_max_entries = max(0, int(self.pro_retrieval_cache_max_entries))
         self.pro_eval_cache_max_entries = max(0, int(self.pro_eval_cache_max_entries))
-        self.pro_eval_batch_size = max(1, int(self.pro_eval_batch_size))
+        self.pro_tier1_min_response_chars = max(1, int(self.pro_tier1_min_response_chars))
+        self.pro_fast_judge_min_len = max(1, int(self.pro_fast_judge_min_len))
+        need_cand = max(self.pro_explore_n_candidates, self.pro_exploit_n_candidates)
+        self.pro_eval_batch_size = max(int(self.pro_eval_batch_size), need_cand, 1)
         self.pro_strategy_embed_min_sim = max(-1.0, min(1.0, float(self.pro_strategy_embed_min_sim)))
+        self.pro_strategy_embed_min_margin = max(0.0, min(1.0, float(self.pro_strategy_embed_min_margin)))
         self.pro_goal_similarity_floor = max(0.0, min(1.0, float(self.pro_goal_similarity_floor)))
+        self.pro_goal_prune_relative_ratio = max(0.0, min(1.0, float(self.pro_goal_prune_relative_ratio)))
         prof = str(self.pro_staged_eval_profile or "balanced").strip().lower()
         if prof not in {"conservative", "balanced", "aggressive"}:
             prof = "balanced"
@@ -120,15 +120,14 @@ class ProPipelineConfig:
             self.pro_pattern_rank_w_rate = float(self.pro_pattern_rank_w_rate) / wsum
             self.pro_pattern_rank_w_avg = float(self.pro_pattern_rank_w_avg) / wsum
             self.pro_pattern_rank_w_req = float(self.pro_pattern_rank_w_req) / wsum
+        self.pro_pattern_rank_low_rate_penalty = max(0.0, min(1.0, float(self.pro_pattern_rank_low_rate_penalty)))
+        self.pro_pattern_rank_low_rate_min_trials = max(1, int(self.pro_pattern_rank_low_rate_min_trials))
         self.pro_verifier_top_n = max(1, int(self.pro_verifier_top_n))
         self.pro_early_stop_min_delta = self._normalize_score_loss_threshold(self.pro_early_stop_min_delta)
 
     @staticmethod
     def _normalize_score_loss_threshold(v: float) -> float:
-        """Map legacy fractional thresholds (e.g. 0.1) to score_loss 0–10 scale (1.0).
-
-        Values already on the 0–10 scale (e.g. 1.0, 2.0) are left unchanged.
-        """
+        """Map legacy fractional thresholds (e.g. 0.1) to score_loss 0–10 scale (1.0)."""
         x = float(v)
         if 0.0 < x < 1.0:
             return x * 10.0
@@ -169,12 +168,15 @@ class ProPipelineConfig:
             pro_eval_cache_max_entries=int(getattr(args, "pro_eval_cache_max_entries", 4096)),
             pro_enable_fast_judge=bool(getattr(args, "pro_enable_fast_judge", True)),
             pro_fast_judge_min_len=int(getattr(args, "pro_fast_judge_min_len", 24)),
+            pro_tier1_min_response_chars=int(getattr(args, "pro_tier1_min_response_chars", 10)),
             pro_enable_feedback_scheduler=bool(getattr(args, "pro_enable_feedback_scheduler", True)),
             pro_feedback_cooldown_repeats=int(getattr(args, "pro_feedback_cooldown_repeats", 1)),
             pro_enable_strategy_embed_match=strat_embed,
-            pro_strategy_embed_min_sim=float(getattr(args, "pro_strategy_embed_min_sim", 0.22)),
+            pro_strategy_embed_min_sim=float(getattr(args, "pro_strategy_embed_min_sim", 0.28)),
+            pro_strategy_embed_min_margin=float(getattr(args, "pro_strategy_embed_min_margin", 0.05)),
             pro_enable_prompt_strategy_attribution=prompt_attrib,
             pro_goal_similarity_floor=float(getattr(args, "pro_goal_similarity_floor", 0.15)),
+            pro_goal_prune_relative_ratio=float(getattr(args, "pro_goal_prune_relative_ratio", 0.90)),
             pro_staged_eval_enabled=bool(getattr(args, "pro_staged_eval_enabled", False)),
             pro_staged_eval_profile=str(getattr(args, "pro_staged_eval_profile", "balanced")),
             pro_staged_filter_keep_ratio=float(getattr(args, "pro_staged_filter_keep_ratio", 0.5)),
@@ -196,9 +198,15 @@ class ProPipelineConfig:
             pro_dynamic_pattern_select=bool(getattr(args, "pro_dynamic_pattern_select", False)),
             pro_pattern_exploit_n=int(getattr(args, "pro_pattern_exploit_n", 3)),
             pro_pattern_explore_n=int(getattr(args, "pro_pattern_explore_n", 2)),
-            pro_pattern_rank_w_rate=float(getattr(args, "pro_pattern_rank_w_rate", 0.3)),
-            pro_pattern_rank_w_avg=float(getattr(args, "pro_pattern_rank_w_avg", 0.3)),
-            pro_pattern_rank_w_req=float(getattr(args, "pro_pattern_rank_w_req", 0.4)),
+            pro_pattern_rank_w_rate=float(getattr(args, "pro_pattern_rank_w_rate", 0.25)),
+            pro_pattern_rank_w_avg=float(getattr(args, "pro_pattern_rank_w_avg", 0.25)),
+            pro_pattern_rank_w_req=float(getattr(args, "pro_pattern_rank_w_req", 0.50)),
+            pro_pattern_rank_low_rate_penalty=float(
+                getattr(args, "pro_pattern_rank_low_rate_penalty", 0.85),
+            ),
+            pro_pattern_rank_low_rate_min_trials=int(
+                getattr(args, "pro_pattern_rank_low_rate_min_trials", 3),
+            ),
             pro_pattern_explore_seed=getattr(args, "pro_pattern_explore_seed", None),
             pro_four_tier_eval=bool(getattr(args, "pro_four_tier_eval", False)),
             pro_verifier_top_n=int(getattr(args, "pro_verifier_top_n", 2)),

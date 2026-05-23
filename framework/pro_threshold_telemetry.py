@@ -16,10 +16,13 @@ THRESHOLD_CONFIG_KEYS = (
     "pro_early_stop_patience",
     "pro_early_stop_min_delta",
     "pro_goal_similarity_floor",
+    "pro_goal_prune_relative_ratio",
     "pro_strategy_embed_min_sim",
+    "pro_strategy_embed_min_margin",
     "pro_enable_strategy_embed_match",
     "pro_enable_prompt_strategy_attribution",
     "pro_fast_judge_min_len",
+    "pro_tier1_min_response_chars",
     "pro_enable_fast_judge",
     "pro_four_tier_eval",
     "pro_verifier_top_n",
@@ -29,6 +32,8 @@ THRESHOLD_CONFIG_KEYS = (
     "pro_pattern_rank_w_rate",
     "pro_pattern_rank_w_avg",
     "pro_pattern_rank_w_req",
+    "pro_pattern_rank_low_rate_penalty",
+    "pro_pattern_rank_low_rate_min_trials",
     "pro_pattern_explore_seed",
     "pro_phase_split",
     "pro_n_candidates",
@@ -48,6 +53,7 @@ THRESHOLD_CONFIG_KEYS = (
     "pro_feedback_cooldown_repeats",
     "pro_per_candidate_strategy_bundles",
     "pro_rotate_explore_across_candidates",
+    "pro_eval_batch_size",
     "target_model_key",
 )
 
@@ -68,6 +74,28 @@ def threshold_config_snapshot(obj: Any) -> Dict[str, Any]:
         if hasattr(obj, k):
             out[k] = getattr(obj, k)
     return out
+
+
+def threshold_config_snapshot_enriched(obj: Any) -> Dict[str, Any]:
+    """Snapshot plus runtime-effective PRO phase knobs (explore/exploit overrides)."""
+    cfg = threshold_config_snapshot(obj)
+    cfg["target_max_new_tokens_note"] = (
+        "Baseline only: each repeat uses pro_explore_max_new_tokens or "
+        "pro_exploit_max_new_tokens for target decode (see runtime_effective)."
+    )
+    cfg["runtime_effective"] = {
+        "explore": {
+            "n_candidates": int(getattr(obj, "pro_explore_n_candidates", 0)),
+            "top_k": int(getattr(obj, "pro_explore_top_k", 0)),
+            "max_new_tokens": int(getattr(obj, "pro_explore_max_new_tokens", 0)),
+        },
+        "exploit": {
+            "n_candidates": int(getattr(obj, "pro_exploit_n_candidates", 0)),
+            "top_k": int(getattr(obj, "pro_exploit_top_k", 0)),
+            "max_new_tokens": int(getattr(obj, "pro_exploit_max_new_tokens", 0)),
+        },
+    }
+    return cfg
 
 
 def effective_score_loss_threshold(v: float) -> float:

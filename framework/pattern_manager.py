@@ -84,9 +84,10 @@ class PatternManager:
         return (x - xmin) / (xmax - xmin)
 
     # Dynamic pattern rank: S_rank = w_rate*rate + w_avg*avg_score + w_req*req_sim (min-max per request).
-    S_RANK_W_RATE = 0.3
-    S_RANK_W_AVG = 0.3
-    S_RANK_W_REQ = 0.4
+    S_RANK_W_RATE = 0.25
+    S_RANK_W_AVG = 0.25
+    S_RANK_W_REQ = 0.50
+    LOW_RATE_PENALTY_THRESHOLD = 0.05
 
     def _strategy_success_rate(self, info: Dict[str, Any]) -> float:
         m = info.get("metrics", {}) if isinstance(info.get("metrics"), dict) else {}
@@ -102,19 +103,24 @@ class PatternManager:
         w_rate: float = S_RANK_W_RATE,
         w_avg: float = S_RANK_W_AVG,
         w_req: float = S_RANK_W_REQ,
+        low_rate_penalty: float = 1.0,
+        low_rate_min_trials: int = 3,
+        low_rate_threshold: float = LOW_RATE_PENALTY_THRESHOLD,
     ) -> List[Tuple[str, Dict[str, Any], float, float, float, float]]:
         """Return rows ``(sid, info, avg_score, req_sim, rate, S_rank)`` sorted by S_rank descending."""
         scored: List[Tuple[str, Dict[str, Any], float, float, float, float]] = []
         rates: List[float] = []
         avgs: List[float] = []
         req_pos: List[float] = []
+        trial_counts: List[int] = []
 
         for sid, info in self.strategies.items():
             if not isinstance(info, dict):
                 continue
-            m = info.get("metrics", {})
+            m = info.get("metrics", {}) if isinstance(info.get("metrics"), dict) else {}
             avg_s = float(m.get("avg_score", 0.0))
             rate = self._strategy_success_rate(info)
+            trials = max(int(m.get("trial_count", 0)), int(m.get("freq", 0)))
             ex_text = self._strategy_example_text(info)
             ex_emb = embed_fn(ex_text) if ex_text else None
             req_sim = (
@@ -124,6 +130,7 @@ class PatternManager:
             rates.append(rate)
             avgs.append(avg_s)
             req_pos.append(max(0.0, req_sim))
+            trial_counts.append(trials)
             scored.append((sid, info, avg_s, req_sim, rate, 0.0))
 
         if not scored:
@@ -133,6 +140,9 @@ class PatternManager:
         amin, amax = min(avgs), max(avgs)
         rsmin, rsmax = min(req_pos), max(req_pos)
         wr, wa, wq = float(w_rate), float(w_avg), float(w_req)
+        pen = max(0.0, min(1.0, float(low_rate_penalty)))
+        pen_trials = max(1, int(low_rate_min_trials))
+        pen_rate = float(low_rate_threshold)
 
         for i, (sid, info, avg_s, req_sim, rate, _) in enumerate(scored):
             n_rate = self._minmax(rate, rmin, rmax) if len(rates) > 1 else float(rate)
@@ -143,6 +153,12 @@ class PatternManager:
                 else float(req_pos[i])
             )
             s_rank = wr * n_rate + wa * n_avg + wq * n_req
+            if (
+                pen < 1.0
+                and trial_counts[i] >= pen_trials
+                and float(rate) < pen_rate
+            ):
+                s_rank *= pen
             scored[i] = (sid, info, avg_s, req_sim, rate, float(s_rank))
 
         scored.sort(key=lambda x: x[5], reverse=True)
@@ -663,6 +679,8 @@ class PatternManager:
         w_rate: float = S_RANK_W_RATE,
         w_avg: float = S_RANK_W_AVG,
         w_req: float = S_RANK_W_REQ,
+        low_rate_penalty: float = 1.0,
+        low_rate_min_trials: int = 3,
         max_rows: int = 80,
     ) -> List[Dict[str, Any]]:
         """All strategies ranked by S_rank (for threshold telemetry)."""
@@ -672,7 +690,13 @@ class PatternManager:
             return []
 
         scored = self._build_dynamic_scored_rows(
-            goal_emb, embed_fn, w_rate=w_rate, w_avg=w_avg, w_req=w_req
+            goal_emb,
+            embed_fn,
+            w_rate=w_rate,
+            w_avg=w_avg,
+            w_req=w_req,
+            low_rate_penalty=low_rate_penalty,
+            low_rate_min_trials=low_rate_min_trials,
         )
         out: List[Dict[str, Any]] = []
         for rank, (sid, _, avg_s, req_sim, rate, s_rank) in enumerate(
@@ -702,6 +726,8 @@ class PatternManager:
         w_rate: float = S_RANK_W_RATE,
         w_avg: float = S_RANK_W_AVG,
         w_req: float = S_RANK_W_REQ,
+        low_rate_penalty: float = 1.0,
+        low_rate_min_trials: int = 3,
         seed: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Epsilon-greedy style selection: top ``exploit_n`` by S_rank + weighted random explore."""
@@ -714,7 +740,13 @@ class PatternManager:
             return self.select_top_k(target_model, library_round, k=k)
 
         scored_rows = self._build_dynamic_scored_rows(
-            goal_emb, embed_fn, w_rate=w_rate, w_avg=w_avg, w_req=w_req
+            goal_emb,
+            embed_fn,
+            w_rate=w_rate,
+            w_avg=w_avg,
+            w_req=w_req,
+            low_rate_penalty=low_rate_penalty,
+            low_rate_min_trials=low_rate_min_trials,
         )
         if not scored_rows:
             return []
@@ -821,6 +853,8 @@ class PatternManager:
         w_rate: float = S_RANK_W_RATE,
         w_avg: float = S_RANK_W_AVG,
         w_req: float = S_RANK_W_REQ,
+        low_rate_penalty: float = 1.0,
+        low_rate_min_trials: int = 3,
         seed: Optional[int] = None,
         n_bundles: int = 1,
     ) -> List[List[Dict[str, Any]]]:
@@ -840,7 +874,13 @@ class PatternManager:
             return [list(single) for _ in range(n_bundles)]
 
         scored_rows = self._build_dynamic_scored_rows(
-            goal_emb, embed_fn, w_rate=w_rate, w_avg=w_avg, w_req=w_req
+            goal_emb,
+            embed_fn,
+            w_rate=w_rate,
+            w_avg=w_avg,
+            w_req=w_req,
+            low_rate_penalty=low_rate_penalty,
+            low_rate_min_trials=low_rate_min_trials,
         )
         if not scored_rows:
             return [[] for _ in range(n_bundles)]

@@ -874,13 +874,7 @@ class Attacker:
 
         if not structured_items:
             parser_goal_fallback = True
-            structured_items = [
-                self._normalize_structured_payload(
-                    "Fallback: parser could not extract structured output; emitting raw goal as Response.",
-                    request,
-                    "fallback",
-                )
-            ]
+            # Do not echo the raw harmful request as Response (inflates goal_prompt_sim ~1.0).
 
         meta = {
             "attacker_system": reference_system,

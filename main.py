@@ -136,6 +136,13 @@ def config():
     config.add_argument("--pro_enable_fast_judge", action='store_true', help="Enable fast heuristic judge before dual scorer")
     config.add_argument("--pro_fast_judge_min_len", type=int, default=24, help="Minimum response length for fast judge")
     config.add_argument(
+        "--pro_tier1_min_response_chars",
+        type=int,
+        default=10,
+        dest="pro_tier1_min_response_chars",
+        help="Min target response length before tier1 short-circuit (default 10; try 24 for calibration)",
+    )
+    config.add_argument(
         "--pro_enable_feedback_scheduler",
         action="store_true",
         help="Enable feedback scheduler: periodic every N repeats + cooldown",
@@ -148,8 +155,20 @@ def config():
     config.add_argument(
         "--pro_strategy_embed_min_sim",
         type=float,
-        default=0.22,
+        default=0.28,
         help="Minimum cosine similarity for prompt-to-strategy attribution and legacy Strategy-field embedding match",
+    )
+    config.add_argument(
+        "--pro_strategy_embed_min_margin",
+        type=float,
+        default=0.05,
+        help="When multiple strategies exceed min_sim, credit top-1 only if (best - second) >= this margin; else slow-path combo",
+    )
+    config.add_argument(
+        "--pro_goal_prune_relative_ratio",
+        type=float,
+        default=0.90,
+        help="Semantic prune effective floor = max(absolute floor, ratio * max candidate sim); always keep top_k by rank",
     )
     config.add_argument(
         "--pro_disable_prompt_strategy_attribution",
@@ -291,23 +310,37 @@ def config():
     config.add_argument(
         "--pro_pattern_rank_w_rate",
         type=float,
-        default=0.3,
+        default=0.25,
         dest="pro_pattern_rank_w_rate",
         help="Weight on success rate (freq/trial_count) in dynamic S_rank blend",
     )
     config.add_argument(
         "--pro_pattern_rank_w_avg",
         type=float,
-        default=0.3,
+        default=0.25,
         dest="pro_pattern_rank_w_avg",
         help="Weight on historical avg_score in dynamic S_rank blend",
     )
     config.add_argument(
         "--pro_pattern_rank_w_req",
         type=float,
-        default=0.4,
+        default=0.50,
         dest="pro_pattern_rank_w_req",
         help="Weight on request–example cosine (req_sim) in dynamic S_rank blend",
+    )
+    config.add_argument(
+        "--pro_pattern_rank_low_rate_penalty",
+        type=float,
+        default=0.85,
+        dest="pro_pattern_rank_low_rate_penalty",
+        help="Multiply S_rank by this when trial_count>=min_trials and success rate<5%%",
+    )
+    config.add_argument(
+        "--pro_pattern_rank_low_rate_min_trials",
+        type=int,
+        default=3,
+        dest="pro_pattern_rank_low_rate_min_trials",
+        help="Min trials before low-rate S_rank penalty applies",
     )
     config.add_argument(
         "--pro_pattern_explore_seed",
@@ -341,7 +374,13 @@ def config():
         dest="pro_per_candidate_strategy_bundles",
         help="Resample explore strategies per candidate (shared exploit block; dynamic select + embeddings required)",
     )
-    config.add_argument("--target_max_new_tokens", type=int, default=150, help="Maximum number of new tokens for target model")
+    config.add_argument(
+        "--target_max_new_tokens",
+        type=int,
+        default=150,
+        help="Baseline decode budget (non-PRO). With --pro_enabled, each repeat uses "
+        "--pro_explore_max_new_tokens / --pro_exploit_max_new_tokens per phase instead.",
+    )
     config.add_argument("--pattern_force_seed", action="store_true", help="Force seed for pattern manager")
     config.add_argument("--pattern_frozen", action="store_true", help="Freeze pattern manager")
     config.add_argument("--pattern_filepath", type=str, default="./logs/pattern_library.json", help="Path to pattern library")

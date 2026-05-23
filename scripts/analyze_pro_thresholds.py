@@ -239,8 +239,70 @@ def _fmt_stats(values: Sequence[float]) -> str:
     )
 
 
+def _telemetry_coverage_lines(
+    attack_log: List[Dict[str, Any]],
+    by_kind: Dict[str, List[Dict[str, Any]]],
+) -> List[str]:
+    n_attack = len(attack_log)
+    summaries = by_kind.get("repeat_summary", [])
+    eval_ev = by_kind.get("eval_candidate", []) + by_kind.get("eval_tier2", [])
+    tier1_ev = by_kind.get("tier1_short_circuit", [])
+    lines: List[str] = []
+    if n_attack:
+        ratio = len(summaries) / n_attack if n_attack else 0.0
+        lines.append(
+            f"- **repeat_summary coverage**: {len(summaries)}/{n_attack} attack_log repeats "
+            f"({100 * ratio:.1f}%)"
+        )
+        if ratio < 0.9:
+            lines.append(
+                "- ⚠ Low repeat_summary coverage — skipped repeats should still emit "
+                "`repeat_summary` with `skipped=true` after telemetry improvements."
+            )
+    if eval_ev and n_attack:
+        lines.append(
+            f"- **eval_candidate events**: {len(eval_ev)} "
+            f"(~{len(eval_ev) / max(n_attack, 1):.1f} per attack_log repeat)"
+        )
+    if tier1_ev:
+        ctr = Counter(str(e.get("reason", "")) for e in tier1_ev)
+        lines.append(f"- **tier1_short_circuit events**: {len(tier1_ev)}")
+        for reason, cnt in ctr.most_common(6):
+            lines.append(f"  - {reason or '(none)'}: {cnt}")
+    return lines
+
+
+def _tier1_response_len_analysis(
+    tier1_events: List[Dict[str, Any]],
+    config: Dict[str, Any],
+) -> List[str]:
+    if not tier1_events:
+        return ["No tier1_short_circuit telemetry (enable four_tier or legacy tier1 path)."]
+    lens = [int(e["response_len"]) for e in tier1_events if e.get("response_len") is not None]
+    min_c = int(config.get("pro_tier1_min_response_chars", 10))
+    lines = [f"Configured `pro_tier1_min_response_chars`: **{min_c}**"]
+    if lens:
+        lines.append(f"Response lengths at tier1 gate: {_fmt_stats([float(x) for x in lens])}")
+        short = sum(1 for e in tier1_events if e.get("reason") == "short_response")
+        lines.append(f"short_response events: {short}/{len(tier1_events)}")
+    return lines
+
+
 def _config_notes(config: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
+    note = config.get("target_max_new_tokens_note")
+    if note:
+        lines.append(f"- **Note**: {note}")
+    rt = config.get("runtime_effective")
+    if isinstance(rt, dict):
+        lines.append("- **Runtime-effective decode** (per phase):")
+        for phase in ("explore", "exploit"):
+            block = rt.get(phase)
+            if isinstance(block, dict):
+                lines.append(
+                    f"  - {phase}: n_candidates={block.get('n_candidates')}, "
+                    f"top_k={block.get('top_k')}, max_new_tokens={block.get('max_new_tokens')}"
+                )
     for k in UNUSED_CONFIG_KEYS:
         if k in config:
             lines.append(
@@ -344,8 +406,15 @@ def _success_gate_analysis(
     floor = float(config.get("pro_goal_similarity_floor", 0.15))
 
     eval_gs = [float(ev["goal_sim"]) for ev in eval_events if ev.get("goal_sim") is not None]
+    eval_grs = [
+        float(ev["goal_response_sim"])
+        for ev in eval_events
+        if ev.get("goal_response_sim") is not None
+    ]
     if eval_gs:
-        lines.append(f"Eval candidate goal_sim: {_fmt_stats(eval_gs)}")
+        lines.append(f"Eval candidate goal_prompt_sim (goal_sim): {_fmt_stats(eval_gs)}")
+    if eval_grs:
+        lines.append(f"Eval candidate goal_response_sim: {_fmt_stats(eval_grs)}")
 
     j_raw = sum(1 for ev in eval_events if ev.get("J_raw_jailbroken") or ev.get("is_jailbroken"))
     j_qual = sum(1 for ev in eval_events if ev.get("success_qualified"))
@@ -357,8 +426,16 @@ def _success_gate_analysis(
         )
 
     rep_gs = [float(s["goal_sim"]) for s in summaries if s.get("goal_sim") is not None]
+    rep_grs = [
+        float(s["goal_response_sim"])
+        for s in summaries
+        if s.get("goal_response_sim") is not None
+    ]
     if rep_gs:
-        lines.append(f"Repeat-summary best goal_sim: {_fmt_stats(rep_gs)}")
+        lines.append(f"Repeat-summary best goal_prompt_sim: {_fmt_stats(rep_gs)}")
+    if rep_grs:
+        lines.append(f"Repeat-summary best goal_response_sim: {_fmt_stats(rep_grs)}")
+    if rep_gs:
         lines.append("")
         lines.append("| floor | repeats goal_pass | repeats would fail gate |")
         lines.append("|-------|-------------------|-------------------------|")
@@ -560,13 +637,18 @@ def _phase_breakdown(rows: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
-def _run_overview_section(artifacts: RunArtifacts) -> List[str]:
+def _run_overview_section(
+    artifacts: RunArtifacts,
+    by_kind: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+) -> List[str]:
     lines = ["## Run overview\n"]
     if artifacts.run_dir:
         lines.append(f"- **Run directory**: `{artifacts.run_dir}`")
     lines.append(f"- **Telemetry events**: {len(artifacts.telemetry)}")
     lines.append(f"- **Timing events** (`[PRO timing]`): {len(artifacts.timing_events)}")
     lines.append(f"- **Attack log entries**: {len(artifacts.attack_log)}")
+    if by_kind is not None:
+        lines.extend(_telemetry_coverage_lines(artifacts.attack_log, by_kind))
     if artifacts.pattern_library:
         n_strat = len(artifacts.pattern_library.get("strategies") or {})
         lines.append(f"- **Pattern library strategies** (snapshot): {n_strat}")
@@ -775,6 +857,12 @@ def _strategy_usage_section(
             f"- **Prompt attribution** (n={len(attrib)}): "
             f"0 match={match0}, 1 match={match1}, ≥2 match={match2p}"
         )
+        mode_ctr = Counter(str(a.get("attribution_mode", "")) for a in attrib if a.get("attribution_mode"))
+        if mode_ctr:
+            lines.append(
+                "- **Attribution modes**: "
+                + ", ".join(f"{k}={v}" for k, v in mode_ctr.most_common())
+            )
 
     if credit:
         lines.append("- **Library credit events** (expanded):")
@@ -944,10 +1032,29 @@ def _health_checks_section(
         gs = [float(e["goal_sim"]) for e in eval_ev if e.get("goal_sim") is not None]
         if gs and min(gs) == max(gs) == 1.0:
             warnings.append(
-                "All goal_sim=1.0 — goal floor tuning may be meaningless on this run."
+                "All goal_prompt_sim (goal_sim)=1.0 — prompts may still echo the request; "
+                "use goal_response_sim for success gate; check parser_goal_fallback events."
             )
-
+        pfb = by_kind.get("parser_goal_fallback", [])
+        if pfb:
+            warnings.append(
+                f"parser_goal_fallback fired {len(pfb)} time(s) — repeats skipped with "
+                "no structured candidates (raw goal injection removed)."
+            )
+        grs = [float(e["goal_response_sim"]) for e in eval_ev if e.get("goal_response_sim") is not None]
+        if grs and max(grs) < float(config.get("pro_goal_similarity_floor", 0.15)):
+            warnings.append(
+                "All goal_response_sim below configured floor — success gate may block "
+                "every qualified jailbreak."
+            )
+    summaries = by_kind.get("repeat_summary", [])
     attack = artifacts.attack_log
+    if attack and summaries and len(summaries) / len(attack) < 0.5:
+        warnings.append(
+            f"Telemetry repeat_summary sparse ({len(summaries)}/{len(attack)}) — "
+            "threshold stats may under-represent skipped repeats."
+        )
+
     if attack:
         if not any(x.get("feedback_called") for x in attack):
             warnings.append("No repeat invoked feedback — refine loop may be inactive.")
@@ -990,7 +1097,7 @@ def build_report(artifacts: RunArtifacts) -> str:
     sections: List[str] = []
     sections.append("# PRO run analysis report\n")
 
-    sections.extend(_run_overview_section(artifacts))
+    sections.extend(_run_overview_section(artifacts, by_kind))
     sections.append("")
     sections.extend(_runtime_performance_section(artifacts))
     sections.append("")
@@ -1045,6 +1152,11 @@ def build_report(artifacts: RunArtifacts) -> str:
             by_kind.get("repeat_summary", []),
             config,
         )
+    )
+
+    sections.append("\n## Tier1 short-circuit (`pro_tier1_min_response_chars`)\n")
+    sections.extend(
+        _tier1_response_len_analysis(by_kind.get("tier1_short_circuit", []), config)
     )
 
     sections.append(

@@ -21,6 +21,7 @@ from framework.attacker import Attacker
 from framework.pro_pipeline_config import ProPipelineConfig
 from framework.pro_threshold_telemetry import (
     ProThresholdTelemetry,
+    threshold_config_snapshot,
     threshold_config_snapshot_enriched,
 )
 
@@ -154,10 +155,20 @@ class AutoDANTurboPro:
         self.target = target
         for _k, _v in asdict(config).items():
             setattr(self, _k, _v)
+        self._pro_baseline_config_snapshot = threshold_config_snapshot(config)
         self.eval_cache = OrderedDict() if self.pro_enable_eval_cache else None
+        if self.pro_four_tier_eval and self.eval_cache is None:
+            self.eval_cache = OrderedDict()
+            self.logger.info(
+                "[PRO] four_tier: enabled target decode LRU cache (also set --pro_enable_eval_cache)",
+            )
         self._retrieval_embed_cache = (
             OrderedDict() if self.pro_enable_retrieval_cache else None
         )
+        if getattr(self, "pro_fast_profile", False):
+            self.logger.info(
+                "[PRO] fast_profile active: four_tier eval with short decode + top_k-aligned verifier",
+            )
         self._staged_eval_spent_ms = 0.0
         self._staged_eval_stats_current_request = None
 
@@ -1311,8 +1322,16 @@ class AutoDANTurboPro:
             scored.append((sim, c_str))
         scored.sort(key=lambda x: x[0], reverse=True)
         max_sim = float(scored[0][0]) if scored else 0.0
-        effective_floor = max(abs_floor, relative_ratio * max_sim) if scored else abs_floor
-        passing = [s for s in scored if float(s[0]) >= effective_floor]
+        if strict_floor:
+            # four_tier: absolute floor only, then top_k by rank (relative 0.9*max_sim
+            # often leaves only one candidate when embedding spread is wide).
+            effective_floor = abs_floor
+            passing = [s for s in scored if float(s[0]) >= abs_floor]
+            prune_mode = "strict_absolute_top_k"
+        else:
+            effective_floor = max(abs_floor, relative_ratio * max_sim) if scored else abs_floor
+            passing = [s for s in scored if float(s[0]) >= effective_floor]
+            prune_mode = "relative_or_absolute_top_k"
         if strict_floor and not passing:
             scored_filtered: List[Tuple[float, str]] = []
         elif passing:
@@ -1325,11 +1344,13 @@ class AutoDANTurboPro:
             floor=abs_floor,
             effective_floor=round(effective_floor, 4),
             relative_ratio=relative_ratio,
+            prune_mode=prune_mode,
             max_sim=round(max_sim, 4),
             strict_floor=bool(strict_floor),
             n_candidates=len(candidates),
             n_skipped_identical_goal=n_skipped_identical,
             n_above_effective_floor=sum(1 for s, _ in scored if float(s) >= effective_floor),
+            n_above_absolute_floor=sum(1 for s, _ in scored if float(s) >= abs_floor),
             n_selected=n_selected,
             top_k=int(self.pro_top_k),
             similarities=[
@@ -1611,7 +1632,11 @@ class AutoDANTurboPro:
                 }
             )
         order = sorted(range(len(rows)), key=lambda ix: rows[ix]["score_loss"], reverse=True)
-        verifier_n = min(int(self.pro_verifier_top_n), len(rows))
+        verifier_n = min(
+            int(self.pro_verifier_top_n),
+            len(rows),
+            int(self.pro_top_k),
+        )
         dual_calls = 0
         fast_shortcuts = 0
         early_stop = False
@@ -2412,6 +2437,17 @@ class AutoDANTurboPro:
                     for g in structured_items
                 ],
             },
+        )
+        self._log_threshold(
+            "generation_summary",
+            n_structured_items=n_items,
+            n_nonempty_response=n_nonempty,
+            valid_n=int(gen_meta.get("valid_n") or n_nonempty),
+            parse_failed=int(gen_meta.get("parse_failed") or 0),
+            total_decodes=int(gen_meta.get("total_decodes") or 0),
+            reject_reason_counts=dict(gen_meta.get("reject_reason_counts") or {}),
+            extraction_stage_counts=dict(gen_meta.get("extraction_stage_counts") or {}),
+            parser_goal_fallback=bool(gen_meta.get("parser_goal_fallback")),
         )
         if gen_meta.get("parser_goal_fallback"):
             self.logger.warning(

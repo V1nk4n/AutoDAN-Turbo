@@ -217,8 +217,8 @@ def config():
         help="Resample explore strategies per candidate (shared exploit block; dynamic select + embeddings required)",
     )
     parser.add_argument("--target_max_new_tokens", type=int, default=150)
-    parser.add_argument("--nll_min", type=float, default=0.0)
-    parser.add_argument("--nll_max", type=float, default=10.0)
+    parser.add_argument("--nll_min", type=float, default=2.0)
+    parser.add_argument("--nll_max", type=float, default=5.0)
     parser.add_argument("--pattern_force_seed", action="store_true", help="Force seed for pattern manager")
     parser.add_argument("--pattern_frozen", action="store_true", help="Freeze pattern manager")
 

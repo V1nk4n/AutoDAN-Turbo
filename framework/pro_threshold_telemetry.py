@@ -79,6 +79,13 @@ def threshold_config_snapshot(obj: Any) -> Dict[str, Any]:
 def threshold_config_snapshot_enriched(obj: Any) -> Dict[str, Any]:
     """Snapshot plus runtime-effective PRO phase knobs (explore/exploit overrides)."""
     cfg = threshold_config_snapshot(obj)
+    baseline = getattr(obj, "_pro_baseline_config_snapshot", None)
+    if isinstance(baseline, dict):
+        cfg["baseline_cli"] = dict(baseline)
+    cfg["config_note"] = (
+        "Fields on this row reflect pipeline state at first repeat (after explore phase "
+        "override). See baseline_cli for values copied from ProPipelineConfig at init."
+    )
     cfg["target_max_new_tokens_note"] = (
         "Baseline only: each repeat uses pro_explore_max_new_tokens or "
         "pro_exploit_max_new_tokens for target decode (see runtime_effective)."

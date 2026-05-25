@@ -17,8 +17,8 @@ class ProPipelineConfig:
     pro_score_threshold: float = 0.5
     target_max_new_tokens: int = 150
     target_model_key: str = ""
-    nll_min: float = 0.0
-    nll_max: float = 10.0
+    nll_min: float = 2.0
+    nll_max: float = 5.0
     # Deprecated: PRO always uses ``epochs`` as repeats-per-request. Kept for CLI compat.
     repeat_shots_per_request: bool = True
     pro_early_stop_patience: int = 5
@@ -74,6 +74,7 @@ class ProPipelineConfig:
     pro_verifier_top_n: int = 2
     pro_rotate_explore_across_candidates: bool = False
     pro_per_candidate_strategy_bundles: bool = False
+    pro_fast_profile: bool = False
 
     def __post_init__(self) -> None:
         self.log_every = max(1, int(self.log_every))
@@ -123,6 +124,18 @@ class ProPipelineConfig:
         self.pro_pattern_rank_low_rate_penalty = max(0.0, min(1.0, float(self.pro_pattern_rank_low_rate_penalty)))
         self.pro_pattern_rank_low_rate_min_trials = max(1, int(self.pro_pattern_rank_low_rate_min_trials))
         self.pro_verifier_top_n = max(1, int(self.pro_verifier_top_n))
+        if self.pro_four_tier_eval:
+            # Never run dual on more prompts than survived semantic prune this repeat.
+            self.pro_verifier_top_n = min(
+                int(self.pro_verifier_top_n),
+                int(self.pro_top_k),
+            )
+            if not self.pro_enable_eval_cache:
+                self.pro_enable_eval_cache = True
+        self.nll_min = float(self.nll_min)
+        self.nll_max = float(self.nll_max)
+        if self.nll_max <= self.nll_min:
+            raise ValueError(f"nll_max ({self.nll_max}) must be greater than nll_min ({self.nll_min})")
         self.pro_early_stop_min_delta = self._normalize_score_loss_threshold(self.pro_early_stop_min_delta)
 
     @staticmethod
@@ -148,8 +161,8 @@ class ProPipelineConfig:
             pro_score_threshold=float(getattr(args, "pro_score_threshold", 0.5)),
             target_max_new_tokens=int(getattr(args, "target_max_new_tokens", 150)),
             target_model_key=str(target_model_key or getattr(args, "target_model_key", "") or ""),
-            nll_min=float(getattr(args, "nll_min", 0.0)),
-            nll_max=float(getattr(args, "nll_max", 10.0)),
+            nll_min=float(getattr(args, "nll_min", 2.0)),
+            nll_max=float(getattr(args, "nll_max", 5.0)),
             repeat_shots_per_request=bool(getattr(args, "pro_repeat_shots_per_request", False)),
             pro_early_stop_patience=int(getattr(args, "pro_early_stop_patience", 5)),
             pro_early_stop_min_delta=float(getattr(args, "pro_early_stop_min_delta", 0.1)),
@@ -166,10 +179,12 @@ class ProPipelineConfig:
             pro_enable_retrieval_cache=bool(getattr(args, "pro_enable_retrieval_cache", True)),
             pro_retrieval_cache_max_entries=int(getattr(args, "pro_retrieval_cache_max_entries", 4096)),
             pro_eval_cache_max_entries=int(getattr(args, "pro_eval_cache_max_entries", 4096)),
-            pro_enable_fast_judge=bool(getattr(args, "pro_enable_fast_judge", True)),
+            pro_enable_fast_judge=bool(getattr(args, "pro_enable_fast_judge", False))
+            or not bool(getattr(args, "pro_disable_fast_judge", False)),
             pro_fast_judge_min_len=int(getattr(args, "pro_fast_judge_min_len", 24)),
             pro_tier1_min_response_chars=int(getattr(args, "pro_tier1_min_response_chars", 10)),
-            pro_enable_feedback_scheduler=bool(getattr(args, "pro_enable_feedback_scheduler", True)),
+            pro_enable_feedback_scheduler=bool(getattr(args, "pro_enable_feedback_scheduler", False))
+            or not bool(getattr(args, "pro_disable_feedback_scheduler", False)),
             pro_feedback_cooldown_repeats=int(getattr(args, "pro_feedback_cooldown_repeats", 1)),
             pro_enable_strategy_embed_match=strat_embed,
             pro_strategy_embed_min_sim=float(getattr(args, "pro_strategy_embed_min_sim", 0.28)),
@@ -216,4 +231,5 @@ class ProPipelineConfig:
             pro_per_candidate_strategy_bundles=bool(
                 getattr(args, "pro_per_candidate_strategy_bundles", False),
             ),
+            pro_fast_profile=bool(getattr(args, "pro_fast_profile", False)),
         )

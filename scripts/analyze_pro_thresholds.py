@@ -1025,9 +1025,13 @@ def _health_checks_section(
     if eval_ev:
         tier1 = sum(1 for e in eval_ev if str(e.get("judge_lane", "")) == "tier1_short")
         if tier1 / len(eval_ev) > 0.85:
+            tier1_ev = by_kind.get("tier1_short_circuit", [])
+            ctr = Counter(str(e.get("reason", "")) for e in tier1_ev)
+            top_reason = ctr.most_common(1)[0][0] if ctr else "unknown"
             warnings.append(
                 f">85% eval candidates stop at tier1_short ({tier1}/{len(eval_ev)}) — "
-                "target responses often too short; check max_new_tokens / model."
+                f"dominant tier1 reason: {top_reason or 'unknown'}; "
+                "if regex_refusal with long responses, tune target/refusal regex not max_new_tokens."
             )
         gs = [float(e["goal_sim"]) for e in eval_ev if e.get("goal_sim") is not None]
         if gs and min(gs) == max(gs) == 1.0:
@@ -1082,6 +1086,84 @@ def _health_checks_section(
     return lines
 
 
+def _calibration_gates_section(
+    artifacts: RunArtifacts,
+    by_kind: Dict[str, List[Dict[str, Any]]],
+    config: Dict[str, Any],
+) -> List[str]:
+    """Gate 0–2 checklist: is this run valid for threshold tuning?"""
+    lines = ["## Calibration gates (warm-up readiness)\n"]
+    gates: List[Tuple[str, bool, str]] = []
+
+    gens = by_kind.get("generation_summary", [])
+    pfb = by_kind.get("parser_goal_fallback", [])
+    n_rep = len(artifacts.attack_log) or len(gens)
+    fallback_rate = len(pfb) / max(n_rep, 1)
+    valid_ns = [
+        int(g.get("valid_n", 0) or 0)
+        for g in gens
+        if g.get("valid_n") is not None
+    ]
+    med_valid = statistics.median(valid_ns) if valid_ns else 0.0
+    g0_ok = fallback_rate < 0.10 and med_valid >= 2.0
+    gates.append(
+        (
+            "Gate 0 — structured generation",
+            g0_ok,
+            f"parser_goal_fallback={len(pfb)}/{n_rep} ({100*fallback_rate:.1f}%), "
+            f"valid_n median={med_valid:.1f} (need <10% fallback, median≥2)",
+        )
+    )
+
+    prunes = by_kind.get("semantic_prune", [])
+    sel = [int(p.get("n_selected", 0) or 0) for p in prunes]
+    med_sel = statistics.median(sel) if sel else 0.0
+    n_sel_two_plus = sum(1 for x in sel if x >= 2)
+    n_sel_zero = sum(1 for x in sel if x == 0)
+    eval_ev = by_kind.get("eval_candidate", [])
+    gs = [float(e["goal_sim"]) for e in eval_ev if e.get("goal_sim") is not None]
+    all_gs_one = bool(gs) and min(gs) == max(gs) == 1.0
+    g1_ok = (med_sel >= 2.0 or n_sel_two_plus >= max(1, int(0.5 * len(sel)))) and not all_gs_one
+    gates.append(
+        (
+            "Gate 1 — semantic prune / goal_sim",
+            g1_ok,
+            f"prune n_selected median={med_sel:.1f} (≥2 repeats={n_sel_two_plus}, "
+            f"empty={n_sel_zero}), all goal_prompt_sim=1.0={all_gs_one}",
+        )
+    )
+
+    phases = Counter(str(x.get("phase", "")) for x in artifacts.attack_log)
+    n_exploit = int(phases.get("exploit", 0))
+    exploit_share = n_exploit / max(len(artifacts.attack_log), 1)
+    g2_ok = exploit_share >= 0.15
+    gates.append(
+        (
+            "Gate 2 — exploit phase ran",
+            g2_ok,
+            f"exploit repeats={n_exploit}/{len(artifacts.attack_log)} "
+            f"({100*exploit_share:.1f}%, need ≥15%) — lower pro_phase_split or patience if fail",
+        )
+    )
+
+    for name, ok, detail in gates:
+        mark = "PASS" if ok else "FAIL"
+        lines.append(f"- **{name}**: {mark} — {detail}")
+
+    ready = all(ok for _, ok, _ in gates)
+    if ready:
+        lines.append(
+            "\n**Verdict: READY** for threshold calibration (`analyze_pro_thresholds` "
+            "counterfactuals are meaningful)."
+        )
+    else:
+        lines.append(
+            "\n**Verdict: NOT READY** for threshold tuning — fix failed gates before "
+            "trusting goal_floor / embed_min_sim recommendations."
+        )
+    return lines
+
+
 def build_report(artifacts: RunArtifacts) -> str:
     rows = artifacts.telemetry
     by_kind: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -1098,6 +1180,8 @@ def build_report(artifacts: RunArtifacts) -> str:
     sections.append("# PRO run analysis report\n")
 
     sections.extend(_run_overview_section(artifacts, by_kind))
+    sections.append("")
+    sections.extend(_calibration_gates_section(artifacts, by_kind, config))
     sections.append("")
     sections.extend(_runtime_performance_section(artifacts))
     sections.append("")
@@ -1117,8 +1201,19 @@ def build_report(artifacts: RunArtifacts) -> str:
 
     if config:
         sections.append("## Active config (from run_config)\n")
+        baseline = config.get("baseline_cli")
+        if isinstance(baseline, dict):
+            sections.append("### Baseline CLI (`ProPipelineConfig` at pipeline init)\n")
+            for k in sorted(baseline.keys()):
+                sections.append(f"- **{k}**: `{baseline[k]}`")
+            sections.append("")
+        skip = {"baseline_cli", "config_note", "target_max_new_tokens_note", "runtime_effective"}
         for k in sorted(config.keys()):
+            if k in skip:
+                continue
             sections.append(f"- **{k}**: `{config[k]}`")
+        if isinstance(config.get("runtime_effective"), dict):
+            sections.append(f"- **runtime_effective**: `{config['runtime_effective']}`")
         sections.append("")
         notes = _config_notes(config)
         if notes:

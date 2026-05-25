@@ -6,6 +6,7 @@ import logging
 import os
 from dataclasses import replace
 from framework.pro_pipeline_config import ProPipelineConfig
+from framework.pro_fast_profile import apply_pro_fast_profile
 from pipeline import AutoDANTurbo
 from pipeline_pro import AutoDANTurboPro, _format_duration_ms
 import wandb
@@ -96,6 +97,18 @@ def config():
     config.add_argument("--pro_top_k", type=int, default=2, help="Top k candidates for PRO")
     config.add_argument("--pro_score_threshold", type=float, default=0.5, help="Score threshold for PRO")
     config.add_argument(
+        "--nll_min",
+        type=float,
+        default=2.0,
+        help="NLL lower bound for mapping to score_loss (0–10); lower NLL → higher score_loss",
+    )
+    config.add_argument(
+        "--nll_max",
+        type=float,
+        default=5.0,
+        help="NLL upper bound for mapping to score_loss (0–10); must be > nll_min",
+    )
+    config.add_argument(
         "--pro_repeat_shots_per_request",
         action="store_true",
         help="Deprecated (no-op). PRO always runs --epochs repeats per request; refine hints accumulate between repeats.",
@@ -133,7 +146,16 @@ def config():
         default=2,
         help="Target-side batch size for PRO batched decode/NLL (e.g. four_tier); set >= pro_n_candidates to decode all candidates in one batch when VRAM allows",
     )
-    config.add_argument("--pro_enable_fast_judge", action='store_true', help="Enable fast heuristic judge before dual scorer")
+    config.add_argument(
+        "--pro_disable_fast_judge",
+        action="store_true",
+        help="Disable fast heuristic judge (default: enabled, matches pre-four_tier throughput)",
+    )
+    config.add_argument(
+        "--pro_enable_fast_judge",
+        action="store_true",
+        help="Force fast heuristic judge on (default: on unless --pro_disable_fast_judge)",
+    )
     config.add_argument("--pro_fast_judge_min_len", type=int, default=24, help="Minimum response length for fast judge")
     config.add_argument(
         "--pro_tier1_min_response_chars",
@@ -143,9 +165,16 @@ def config():
         help="Min target response length before tier1 short-circuit (default 10; try 24 for calibration)",
     )
     config.add_argument(
+        "--pro_disable_feedback_scheduler",
+        action="store_true",
+        dest="pro_disable_feedback_scheduler",
+        help="Disable adaptive feedback scheduler (default: enabled)",
+    )
+    config.add_argument(
         "--pro_enable_feedback_scheduler",
         action="store_true",
-        help="Enable feedback scheduler: periodic every N repeats + cooldown",
+        dest="pro_enable_feedback_scheduler",
+        help="Force feedback scheduler on",
     )
     config.add_argument(
         "--pro_disable_strategy_embed_match",
@@ -350,6 +379,13 @@ def config():
         help="RNG seed for exploration draws (optional, reproducibility)",
     )
     config.add_argument(
+        "--pro_fast_profile",
+        action="store_true",
+        dest="pro_fast_profile",
+        help="Throughput preset for four_tier: enables --pro_four_tier_eval with short decode "
+        "(64/128 tokens), explore_n=2 top_k=1, verifier_top_n=1, eval cache, fast judge",
+    )
+    config.add_argument(
         "--pro_four_tier_eval",
         action="store_true",
         dest="pro_four_tier_eval",
@@ -499,6 +535,15 @@ def main() -> None:
         logger.warning(f"⚠️ Failed to setup wandb logging: {e}")
     
     args = parser.parse_args()
+    if getattr(args, "pro_fast_profile", False):
+        apply_pro_fast_profile(args, logger=logger)
+    elif getattr(args, "pro_four_tier_eval", False) and int(
+        getattr(args, "pro_explore_max_new_tokens", 64)
+    ) > 128:
+        logger.info(
+            "[PRO] four_tier with long explore decode is slow; add --pro_fast_profile "
+            "or lower --pro_explore_max_new_tokens (e.g. 64).",
+        )
 
     config_dir = args.chat_config
     epochs = args.epochs

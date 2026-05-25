@@ -7,8 +7,8 @@ from framework.pro_constants import PRO_GENERATOR_STRUCTURED_KEYS
 
 # Structured XML probes; HF batch path defaults to 1000 without this cap.
 # 384 was cutting off small models (e.g. Qwen2.5-1.5B) before </Response> was written.
-# 768 gives room for <Thought> + <Strategy> + <Response> without exploding memory.
-_STRUCTURED_BATCH_MAX_NEW = 768
+# 1024 reduces xml_truncated / missing </Response> on small attacker models.
+_STRUCTURED_BATCH_MAX_NEW = 1024
 
 
 class Attacker:
@@ -475,9 +475,12 @@ class Attacker:
         obj, reason = self._parse_structured_json_payload(text)
         if obj is not None:
             return obj, None, "json"
-        if reason:
-            return None, reason, None
-        return self._parse_structured_tolerant_payload(text)
+        # Always try XML / prefix / tolerant paths when JSON is absent or invalid.
+        # Previously we returned early on e.g. no_json_braces and never parsed <Response>.
+        obj_xml, reason_xml, stage = self._parse_structured_tolerant_payload(text)
+        if obj_xml is not None:
+            return obj_xml, None, stage
+        return None, reason_xml or reason, stage
 
     def _parse_structured_json_payload(self, raw: str) -> Tuple[Optional[dict], Optional[str]]:
         """Return (payload, None) on success or (None, reject_reason) on failure."""
@@ -827,8 +830,8 @@ class Attacker:
         extra_attempts = 0
         # Increase retry budget: small models fail parse ~75 % of the time so
         # we need more attempts before giving up. n*3 attempts + extra headroom.
-        max_decode_budget = max(n_int * 3, n_int + 6)
-        per_slot_retries = 5
+        max_decode_budget = max(n_int * 4, n_int + 8)
+        per_slot_retries = 6
         slot = 0
         while (
             len(structured_items) < n_int

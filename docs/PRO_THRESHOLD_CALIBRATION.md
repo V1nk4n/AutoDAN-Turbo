@@ -2,6 +2,10 @@
 
 Use a **warm-up-only** run to tune gates and rank weights, then analyze telemetry before lifelong training.
 
+**Step-by-step workflow:** see [PRO_WARMUP_STEP_BY_STEP.md](PRO_WARMUP_STEP_BY_STEP.md).
+
+**Quick Gate 0 after smoke run:** `python scripts/pro_smoke_gate.py --latest`
+
 ## Recommended warm-up command
 
 ```bash
@@ -69,5 +73,8 @@ State: `logs/warm_up_*`, `logs/lifelong_*`, `pattern_library.json`, `epoch_refin
 | `pro_strategy_embed_min_margin` | Top-1 credit when best−second ≥ margin; else slow-path combo |
 | `pro_pattern_rank_w_*` | Dynamic pattern S_rank blend |
 | `pro_pattern_rank_low_rate_penalty` | Down-rank strategies with rate <5% after ≥3 trials |
+| `nll_min` / `nll_max` | Linear map NLL → `score_loss` on **0–10** (not a gate; tune from telemetry p5/p95) |
+| `pro_early_stop_min_delta` | Min **score_loss** gain vs best-so-far to reset plateau (0–10; CLI &lt;1 is ×10) |
+| `pro_score_threshold` | **Unused** in `pipeline_pro.py` (legacy CLI only) |
 
 Telemetry: `logs/logs_per_run/<run>/pro_threshold_telemetry.jsonl`.

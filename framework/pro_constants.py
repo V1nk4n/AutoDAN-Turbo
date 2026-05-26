@@ -10,12 +10,6 @@ PRO_PATTERN_LIBRARY_ROUND = 1
 # How many top strategies from the library feed the generator prompt.
 PRO_PATTERN_SELECT_TOP_K = 5
 
-# Structured generator contract: exactly three fields (XML tags or JSON keys).
-PRO_GENERATOR_THOUGHT_KEY = "Thought"
-PRO_GENERATOR_STRATEGY_KEY = "Strategy"
+# Keys in the structured JSON contract produced by the attack model (see attacker prompts).
 PRO_GENERATOR_RESPONSE_KEY = "Response"
-PRO_GENERATOR_STRUCTURED_KEYS = (
-    PRO_GENERATOR_THOUGHT_KEY,
-    PRO_GENERATOR_STRATEGY_KEY,
-    PRO_GENERATOR_RESPONSE_KEY,
-)
+PRO_GENERATOR_STRATEGY_KEY = "Strategy"

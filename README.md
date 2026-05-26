@@ -1,3 +1,6 @@
+<<<<<<< HEAD
+# AutoDAN-Turbo
+=======
 # AutoDAN-Turbo
 
 **AutoDAN-Turbo Official Website at [HERE](https://autodans.github.io/AutoDAN-Turbo/)**
@@ -186,3 +189,5 @@ python test.py --azure \
 }
 ```
 
+
+>>>>>>> 77da8a7 (chore: initial commit from forked project)

@@ -1,9 +1,8 @@
 import json
 import logging
 import os
-import random
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 class PatternManager:
@@ -542,287 +541,6 @@ class PatternManager:
         ranked.sort(key=lambda x: x["S_rank"], reverse=True)
         return ranked[:k]
 
-    @staticmethod
-    def _cosine_embedding(a: Any, b: Any) -> float:
-        try:
-            import numpy as np
-
-            va = np.asarray(a, dtype=np.float64).flatten()
-            vb = np.asarray(b, dtype=np.float64).flatten()
-            na = float(np.linalg.norm(va))
-            nb = float(np.linalg.norm(vb))
-            if na <= 0.0 or nb <= 0.0:
-                return -1.0
-            return float(np.dot(va, vb) / (na * nb))
-        except Exception:
-            return -1.0
-
-    @staticmethod
-    def _strategy_example_text(info: Dict[str, Any]) -> str:
-        raw_examples = info.get("examples", [])
-        if not isinstance(raw_examples, list):
-            raw_examples = []
-        for e in raw_examples:
-            s = str(e).strip()
-            if len(s) >= 8:
-                return s[:2000]
-        name = str(info.get("name", "") or "").strip()
-        desc = str(info.get("description", "") or "").strip()
-        return (name + "\n" + desc).strip()[:2000]
-
-    def _strategy_row_dict(
-        self,
-        sid: str,
-        info: Dict[str, Any],
-        target_model: str,
-        library_round: int,
-        s_rank: float,
-    ) -> Dict[str, Any]:
-        raw_examples = info.get("examples", [])
-        if not isinstance(raw_examples, list):
-            raw_examples = []
-        ex_trim = [str(e)[:500] for e in raw_examples[:6] if str(e).strip()]
-        kws = info.get("keywords", [])
-        if not isinstance(kws, list):
-            kws = []
-        kws_trim = [str(x).strip() for x in kws if str(x).strip()][:24]
-        name = str(info.get("name", "") or "")
-        desc = str(info.get("description", "") or "")
-        return {
-            "strategy_id": sid,
-            "name": name,
-            "description": desc,
-            "keywords": kws_trim,
-            "examples": ex_trim,
-            "Strategy": name,
-            "Definition": desc,
-            "Example": ex_trim,
-            "S_rank": float(s_rank),
-        }
-
-    def select_top_k_dynamic(
-        self,
-        request_text: str,
-        embed_fn: Callable[[str], Any],
-        target_model: str,
-        library_round: int,
-        *,
-        k: int = 5,
-        exploit_n: int = 3,
-        explore_n: int = 2,
-        w_avg: float = 0.6,
-        w_req: float = 0.4,
-        seed: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """Epsilon-greedy style selection: top ``exploit_n`` by blended score + weighted random explore."""
-        k = max(1, int(k))
-        exploit_n = max(0, min(int(exploit_n), k))
-        explore_n = max(0, min(int(explore_n), max(0, k - exploit_n)))
-        req = (request_text or "").strip()
-        goal_emb = embed_fn(req) if req else None
-        if goal_emb is None:
-            return self.select_top_k(target_model, library_round, k=k)
-
-        scored_rows: List[Tuple[str, Dict[str, Any], float, float, float]] = []
-        avgs: List[float] = []
-        for sid, info in self.strategies.items():
-            if not isinstance(info, dict):
-                continue
-            m = info.get("metrics", {})
-            avg_s = float(m.get("avg_score", 0.0))
-            avgs.append(avg_s)
-            ex_text = self._strategy_example_text(info)
-            ex_emb = embed_fn(ex_text) if ex_text else None
-            req_sim = self._cosine_embedding(goal_emb, ex_emb) if ex_emb is not None else 0.0
-            req_sim = max(-1.0, min(1.0, float(req_sim)))
-            scored_rows.append((sid, info, avg_s, req_sim, 0.0))
-
-        if not scored_rows:
-            return []
-
-        amin, amax = min(avgs), max(avgs)
-        for i, (sid, info, avg_s, req_sim, _) in enumerate(scored_rows):
-            n_avg = self._minmax(avg_s, amin, amax) if len(avgs) > 1 else float(avg_s)
-            final = float(w_avg) * n_avg + float(w_req) * max(0.0, req_sim)
-            scored_rows[i] = (sid, info, avg_s, req_sim, final)
-
-        scored_rows.sort(key=lambda x: x[4], reverse=True)
-        exploit_pick = scored_rows[:exploit_n]
-        exploit_sids = {sid for sid, _, _, _, _ in exploit_pick}
-        remainder = [row for row in scored_rows if row[0] not in exploit_sids]
-
-        exploit_embs: List[Any] = []
-        for sid, info, _, _, _ in exploit_pick:
-            ex_text = self._strategy_example_text(info)
-            emb = embed_fn(ex_text) if ex_text else None
-            if emb is not None:
-                exploit_embs.append(emb)
-
-        rng = random.Random(seed) if seed is not None else random.Random()
-        explore_rows = self._sample_explore_rows(remainder, exploit_embs, explore_n, embed_fn, rng)
-        return self._ordered_rows_to_strategy_dicts(
-            list(exploit_pick) + list(explore_rows),
-            target_model,
-            library_round,
-            k,
-        )
-
-    def _sample_explore_rows(
-        self,
-        pool: List[Tuple[str, Dict[str, Any], float, float, float]],
-        exploit_embs: List[Any],
-        explore_n: int,
-        embed_fn: Callable[[str], Any],
-        rng: random.Random,
-    ) -> List[Tuple[str, Dict[str, Any], float, float, float]]:
-        """Weighted random explore picks (same rule as legacy dynamic select), without replacement within one call."""
-        explore_rows: List[Tuple[str, Dict[str, Any], float, float, float]] = []
-        pool = list(pool)
-        for _ in range(min(explore_n, len(pool))):
-            weights: List[float] = []
-            for sid, info, av, rs, fs in pool:
-                ex_text = self._strategy_example_text(info)
-                emb = embed_fn(ex_text) if ex_text else None
-                if emb is None or not exploit_embs:
-                    div = 1.0
-                else:
-                    mx = max(self._cosine_embedding(emb, e) for e in exploit_embs)
-                    div = max(0.05, 1.0 - max(0.0, min(1.0, mx)))
-                weights.append(div)
-            total_w = sum(weights)
-            if total_w <= 0:
-                pick = rng.choice(pool)
-            else:
-                r = rng.random() * total_w
-                acc = 0.0
-                pick = pool[0]
-                for row, w in zip(pool, weights):
-                    acc += w
-                    if r <= acc:
-                        pick = row
-                        break
-            explore_rows.append(pick)
-            pool = [x for x in pool if x[0] != pick[0]]
-        return explore_rows
-
-    def _ordered_rows_to_strategy_dicts(
-        self,
-        ordered: List[Tuple[str, Dict[str, Any], float, float, float]],
-        target_model: str,
-        library_round: int,
-        k: int,
-    ) -> List[Dict[str, Any]]:
-        seen: set = set()
-        out: List[Dict[str, Any]] = []
-        rank_slot = 0
-        for sid, info, av, rs, fs in ordered:
-            if sid in seen:
-                continue
-            seen.add(sid)
-            row = self._strategy_row_dict(sid, info, target_model, library_round, fs)
-            row["dynamic_rank"] = rank_slot
-            row["req_sim"] = round(rs, 4)
-            row["avg_score_hist"] = round(av, 4)
-            row["final_blend_score"] = round(fs, 4)
-            out.append(row)
-            rank_slot += 1
-            if len(out) >= k:
-                break
-        return out
-
-    def select_top_k_dynamic_bundles(
-        self,
-        request_text: str,
-        embed_fn: Callable[[str], Any],
-        target_model: str,
-        library_round: int,
-        *,
-        k: int = 5,
-        exploit_n: int = 3,
-        explore_n: int = 2,
-        w_avg: float = 0.6,
-        w_req: float = 0.4,
-        seed: Optional[int] = None,
-        n_bundles: int = 1,
-    ) -> List[List[Dict[str, Any]]]:
-        """Same exploit block as ``select_top_k_dynamic``; resample explore rows per bundle (distinct RNG stream).
-
-        Tries to avoid reusing the same explore ``strategy_id`` across bundles while the remainder pool is large
-        enough; if the pool is exhausted, falls back to the full remainder and clears the reservation set.
-        """
-        k = max(1, int(k))
-        exploit_n = max(0, min(int(exploit_n), k))
-        explore_n = max(0, min(int(explore_n), max(0, k - exploit_n)))
-        n_bundles = max(1, int(n_bundles))
-        req = (request_text or "").strip()
-        goal_emb = embed_fn(req) if req else None
-        if goal_emb is None:
-            single = self.select_top_k(target_model, library_round, k=k)
-            return [list(single) for _ in range(n_bundles)]
-
-        scored_rows: List[Tuple[str, Dict[str, Any], float, float, float]] = []
-        avgs: List[float] = []
-        for sid, info in self.strategies.items():
-            if not isinstance(info, dict):
-                continue
-            m = info.get("metrics", {})
-            avg_s = float(m.get("avg_score", 0.0))
-            avgs.append(avg_s)
-            ex_text = self._strategy_example_text(info)
-            ex_emb = embed_fn(ex_text) if ex_text else None
-            req_sim = self._cosine_embedding(goal_emb, ex_emb) if ex_emb is not None else 0.0
-            req_sim = max(-1.0, min(1.0, float(req_sim)))
-            scored_rows.append((sid, info, avg_s, req_sim, 0.0))
-
-        if not scored_rows:
-            return [[] for _ in range(n_bundles)]
-
-        amin, amax = min(avgs), max(avgs)
-        for i, (sid, info, avg_s, req_sim, _) in enumerate(scored_rows):
-            n_avg = self._minmax(avg_s, amin, amax) if len(avgs) > 1 else float(avg_s)
-            final = float(w_avg) * n_avg + float(w_req) * max(0.0, req_sim)
-            scored_rows[i] = (sid, info, avg_s, req_sim, final)
-
-        scored_rows.sort(key=lambda x: x[4], reverse=True)
-        exploit_pick = scored_rows[:exploit_n]
-        exploit_sids = {sid for sid, _, _, _, _ in exploit_pick}
-        remainder = [row for row in scored_rows if row[0] not in exploit_sids]
-
-        exploit_embs: List[Any] = []
-        for sid, info, _, _, _ in exploit_pick:
-            ex_text = self._strategy_example_text(info)
-            emb = embed_fn(ex_text) if ex_text else None
-            if emb is not None:
-                exploit_embs.append(emb)
-
-        base_seed = int(seed) if seed is not None else hash((id(self), id(embed_fn), request_text[:80])) % (2**31)
-        reserved_explore: set = set()
-        bundles_out: List[List[Dict[str, Any]]] = []
-
-        for b in range(n_bundles):
-            rng_b = random.Random(base_seed + b * 1_000_003 + explore_n * 17)
-
-            pool_rows = [r for r in remainder if r[0] not in reserved_explore]
-            if len(pool_rows) < explore_n:
-                reserved_explore.clear()
-                pool_rows = list(remainder)
-
-            explore_rows = self._sample_explore_rows(
-                pool_rows,
-                exploit_embs,
-                explore_n,
-                embed_fn,
-                rng_b,
-            )
-            for sid, _, _, _, _ in explore_rows:
-                reserved_explore.add(sid)
-
-            ordered = list(exploit_pick) + list(explore_rows)
-            bundles_out.append(
-                self._ordered_rows_to_strategy_dicts(ordered, target_model, library_round, k)
-            )
-        return bundles_out
-
     def match_keywords(self, text: str) -> Optional[str]:
         if not text:
             return None
@@ -870,8 +588,6 @@ class PatternManager:
         s_quality: float,
         query: str = "",
         response: str = "",
-        *,
-        extra_metrics: Optional[Dict[str, Any]] = None,
     ) -> bool:
         if self.frozen:
             return False
@@ -899,19 +615,16 @@ class PatternManager:
         metrics.pop("successful_turns", None)
 
         history = info.setdefault("history", [])
-        entry: Dict[str, Any] = {
-            "outcome": "success",
-            "library_round": lr,
-            "target_model": str(target_model),
-            "s_quality": float(s_quality),
-            "query": str(query)[:300],
-            "response": str(response)[:300],
-        }
-        if extra_metrics and isinstance(extra_metrics, dict):
-            for key in ("score_loss", "diversity_index", "nll", "J", "judge_lane", "tier"):
-                if key in extra_metrics:
-                    entry[key] = extra_metrics[key]
-        history.append(entry)
+        history.append(
+            {
+                "outcome": "success",
+                "library_round": lr,
+                "target_model": str(target_model),
+                "s_quality": float(s_quality),
+                "query": str(query)[:300],
+                "response": str(response)[:300],
+            }
+        )
         examples = info.setdefault("examples", [])
         if query:
             examples.append(str(query)[:500])

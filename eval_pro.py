@@ -47,13 +47,10 @@ def config():
     parser.add_argument("--pro_score_threshold", type=float, default=0.5)
     parser.add_argument("--pro_repeat_shots_per_request", action="store_true", help="Run each request for `epochs` single-shot repeats (refine hints carry across repeats)")
     parser.add_argument("--pro_early_stop_patience", type=int, default=5, help="Stop request repeats when score plateaus")
-    parser.add_argument("--pro_early_stop_min_delta", type=float, default=0.1, help="Minimum score_loss improvement to reset plateau (0–10)")
-    parser.add_argument(
-        "--pro_feedback_every",
-        type=int,
-        default=2,
-        help="Run feedback/refine every N repeats (periodic gate only)",
-    )
+    parser.add_argument("--pro_early_stop_min_delta", type=float, default=0.01, help="Minimum score improvement to reset plateau")
+    parser.add_argument("--pro_refusal_streak_stop", type=int, default=4, help="Stop repeats after consecutive refusals")
+    parser.add_argument("--pro_feedback_every", type=int, default=2, help="Run feedback/refine every N repeats")
+    parser.add_argument("--pro_feedback_min_quality", type=float, default=0.35, help="Always run feedback when quality exceeds threshold")
     parser.add_argument("--pro_phase_split", type=float, default=0.7, help="Exploration ratio across repeats [0,1]")
     parser.add_argument("--pro_explore_n_candidates", type=int, default=2, help="Candidates per shot during exploration")
     parser.add_argument("--pro_explore_top_k", type=int, default=1, help="Top-k during exploration")
@@ -66,7 +63,9 @@ def config():
     parser.add_argument("--pro_enable_retrieval_cache", action="store_true", help="Enable retrieval embedding cache")
     parser.add_argument("--pro_enable_fast_judge", action="store_true", help="Enable fast heuristic judge before dual scorer")
     parser.add_argument("--pro_fast_judge_min_len", type=int, default=24, help="Minimum response length for fast judge")
-    parser.add_argument("--pro_enable_feedback_scheduler", action="store_true", help="Enable periodic feedback scheduler + cooldown")
+    parser.add_argument("--pro_enable_feedback_scheduler", action="store_true", help="Enable adaptive feedback scheduler")
+    parser.add_argument("--pro_feedback_budget_ms", type=float, default=5000.0, help="Per-request feedback budget in ms")
+    parser.add_argument("--pro_feedback_min_delta", type=float, default=0.02, help="Minimum score delta for adaptive feedback")
     parser.add_argument(
         "--pro_feedback_cooldown_repeats",
         type=int,

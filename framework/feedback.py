@@ -78,6 +78,8 @@ class Feedback():
                 "target_response": str(b.get("target_response", ""))[:350],
                 "score_loss": b.get("score_loss"),
                 "J": b.get("J"),
+                "S_quality": b.get("S_quality"),
+
             })
 
         best_compact = {
@@ -85,6 +87,7 @@ class Feedback():
             "target_response": str(best_failed_branch.get("target_response", ""))[:400],
             "score_loss": best_failed_branch.get("score_loss"),
             "J": best_failed_branch.get("J"),
+            "S_quality": best_failed_branch.get("S_quality"),
         }
 
         system = f"""

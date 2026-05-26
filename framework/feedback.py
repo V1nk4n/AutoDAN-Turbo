@@ -60,8 +60,9 @@ class Feedback():
                 "Prompt_id": i,
                 "prompt": str(b.get("prompt", ""))[:350],
                 "target_response": str(b.get("target_response", ""))[:350],
-                "score_loss": b.get("score_loss"),
-                "J": b.get("J"),
+                "R": b.get("R"),
+                "C": b.get("C"),
+                "L": b.get("L"),
                 "S_quality": b.get("S_quality"),
 
             })
@@ -69,8 +70,9 @@ class Feedback():
         best_compact = {
             "prompt": str(best_failed_branch.get("prompt", ""))[:400],
             "target_response": str(best_failed_branch.get("target_response", ""))[:400],
-            "score_loss": best_failed_branch.get("score_loss"),
-            "J": best_failed_branch.get("J"),
+            "R": best_failed_branch.get("R"),
+            "C": best_failed_branch.get("C"),
+            "L": best_failed_branch.get("L"),
             "S_quality": best_failed_branch.get("S_quality"),
         }
 

@@ -74,6 +74,24 @@ python scripts/pro_smoke_gate.py --latest
 python scripts/analyze_pro_thresholds.py --latest --out threshold_report_prod.md
 ```
 
+## Đánh giá sau train (`eval_pro.py`)
+
+Config mặc định khớp `run_pro_production.sh`; dùng thư viện pattern đã train:
+
+```bash
+# Lifelong, 10 repeat/request (nhanh hơn train 50)
+bash scripts/run_pro_eval.sh
+
+# Warm-up split, 5 request
+MAX_REQUESTS=5 EVAL_EPOCHS=5 bash scripts/run_pro_eval.sh warm_up
+
+# HarmBench ASR (paper-style)
+bash scripts/run_pro_eval.sh --use_harmbench_classifier
+
+# Một repeat/request (sanity nhanh)
+python eval_pro.py --single_repeat --max_requests 3 --no_wandb
+```
+
 ## Calib (tune threshold, chậm)
 
 ```bash

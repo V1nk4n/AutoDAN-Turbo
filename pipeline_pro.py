@@ -645,7 +645,7 @@ class AutoDANTurboPro:
                     _format_duration_ms(duration_ms),
                 )
                 # Once a request succeeds, skip remaining repeats for this request.
-                if success and stage in ("pro_lifelong", "pro_warm_up"):
+                if success and stage in ("pro_lifelong", "pro_warm_up", "pro_eval"):
                     early_stop_reason = "success"
                     attack_log[-1]["early_stop_reason"] = early_stop_reason
                     self.logger.info(

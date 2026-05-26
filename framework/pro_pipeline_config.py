@@ -42,8 +42,6 @@ class ProPipelineConfig:
     pro_feedback_cooldown_repeats: int = 1
     pro_enable_strategy_embed_match: bool = True
     pro_strategy_embed_min_sim: float = 0.22
-    # Credit library strategies by embedding the jailbreak prompt vs bundle strategies used to generate it.
-    pro_enable_prompt_strategy_attribution: bool = True
     pro_goal_similarity_floor: float = 0.15
     pro_staged_eval_enabled: bool = False
     pro_staged_eval_profile: str = "balanced"
@@ -59,16 +57,12 @@ class ProPipelineConfig:
     # When False (default), pipeline_stage / PRO events log as short human-readable lines on the console.
     # When True, restore one-line JSON for machine parsing or deep debugging.
     pro_verbose_pipeline_logs: bool = False
-    # Append-only JSONL for threshold tuning (see scripts/analyze_pro_thresholds.py).
-    pro_enable_threshold_telemetry: bool = True
-    pro_telemetry_jsonl: Optional[str] = None
     # --- Optional "decoupled" PRO architecture (embedding rank + 4-tier eval + metadata) ---
-    # Dynamic pattern selection: S_rank = w_rate*norm(rate) + w_avg*norm(avg_score) + w_req*norm(req_sim).
+    # Dynamic pattern selection: final_score = w_avg*norm(avg_score) + w_req*req_sim; 3 exploit + 2 explore.
     pro_dynamic_pattern_select: bool = False
     pro_pattern_exploit_n: int = 3
     pro_pattern_explore_n: int = 2
-    pro_pattern_rank_w_rate: float = 0.3
-    pro_pattern_rank_w_avg: float = 0.3
+    pro_pattern_rank_w_avg: float = 0.6
     pro_pattern_rank_w_req: float = 0.4
     pro_pattern_explore_seed: Optional[int] = None
     # Four-tier evaluation: relevance (strict) → NLL score_loss sort → dual judge on top-N only →
@@ -108,16 +102,10 @@ class ProPipelineConfig:
         self.pro_staged_eval_budget_ms = max(0.0, float(self.pro_staged_eval_budget_ms))
         self.pro_pattern_exploit_n = max(0, int(self.pro_pattern_exploit_n))
         self.pro_pattern_explore_n = max(0, int(self.pro_pattern_explore_n))
-        self.pro_pattern_rank_w_rate = max(0.0, min(1.0, float(self.pro_pattern_rank_w_rate)))
         self.pro_pattern_rank_w_avg = max(0.0, min(1.0, float(self.pro_pattern_rank_w_avg)))
         self.pro_pattern_rank_w_req = max(0.0, min(1.0, float(self.pro_pattern_rank_w_req)))
-        wsum = (
-            self.pro_pattern_rank_w_rate
-            + self.pro_pattern_rank_w_avg
-            + self.pro_pattern_rank_w_req
-        )
+        wsum = self.pro_pattern_rank_w_avg + self.pro_pattern_rank_w_req
         if wsum > 1e-9:
-            self.pro_pattern_rank_w_rate = float(self.pro_pattern_rank_w_rate) / wsum
             self.pro_pattern_rank_w_avg = float(self.pro_pattern_rank_w_avg) / wsum
             self.pro_pattern_rank_w_req = float(self.pro_pattern_rank_w_req) / wsum
         self.pro_verifier_top_n = max(1, int(self.pro_verifier_top_n))
@@ -125,12 +113,9 @@ class ProPipelineConfig:
 
     @staticmethod
     def _normalize_score_loss_threshold(v: float) -> float:
-        """Map legacy fractional thresholds (e.g. 0.1) to score_loss 0–10 scale (1.0).
-
-        Values already on the 0–10 scale (e.g. 1.0, 2.0) are left unchanged.
-        """
+        """Map legacy 0–1 thresholds (e.g. 0.35) to score_loss 0–10 scale (3.5)."""
         x = float(v)
-        if 0.0 < x < 1.0:
+        if 0.0 < x <= 1.0:
             return x * 10.0
         return x
 
@@ -138,7 +123,6 @@ class ProPipelineConfig:
     def from_argparse(cls, args: Any, *, target_model_key: str = "") -> ProPipelineConfig:
         """Build from ``argparse.Namespace`` (``main.py`` / ``eval_pro.py``)."""
         strat_embed = not bool(getattr(args, "pro_disable_strategy_embed_match", False))
-        prompt_attrib = not bool(getattr(args, "pro_disable_prompt_strategy_attribution", False))
         return cls(
             epochs=int(getattr(args, "epochs", 150)),
             warm_up_iterations=int(getattr(args, "warm_up_iterations", 1)),
@@ -173,7 +157,6 @@ class ProPipelineConfig:
             pro_feedback_cooldown_repeats=int(getattr(args, "pro_feedback_cooldown_repeats", 1)),
             pro_enable_strategy_embed_match=strat_embed,
             pro_strategy_embed_min_sim=float(getattr(args, "pro_strategy_embed_min_sim", 0.22)),
-            pro_enable_prompt_strategy_attribution=prompt_attrib,
             pro_goal_similarity_floor=float(getattr(args, "pro_goal_similarity_floor", 0.15)),
             pro_staged_eval_enabled=bool(getattr(args, "pro_staged_eval_enabled", False)),
             pro_staged_eval_profile=str(getattr(args, "pro_staged_eval_profile", "balanced")),
@@ -189,15 +172,10 @@ class ProPipelineConfig:
             pro_staged_weight_probe=float(getattr(args, "pro_staged_weight_probe", 0.65)),
             pro_staged_uncertainty_penalty=float(getattr(args, "pro_staged_uncertainty_penalty", 0.2)),
             pro_verbose_pipeline_logs=bool(getattr(args, "pro_verbose_pipeline_logs", False)),
-            pro_enable_threshold_telemetry=not bool(
-                getattr(args, "pro_disable_threshold_telemetry", False),
-            ),
-            pro_telemetry_jsonl=getattr(args, "pro_telemetry_jsonl", None),
             pro_dynamic_pattern_select=bool(getattr(args, "pro_dynamic_pattern_select", False)),
             pro_pattern_exploit_n=int(getattr(args, "pro_pattern_exploit_n", 3)),
             pro_pattern_explore_n=int(getattr(args, "pro_pattern_explore_n", 2)),
-            pro_pattern_rank_w_rate=float(getattr(args, "pro_pattern_rank_w_rate", 0.3)),
-            pro_pattern_rank_w_avg=float(getattr(args, "pro_pattern_rank_w_avg", 0.3)),
+            pro_pattern_rank_w_avg=float(getattr(args, "pro_pattern_rank_w_avg", 0.6)),
             pro_pattern_rank_w_req=float(getattr(args, "pro_pattern_rank_w_req", 0.4)),
             pro_pattern_explore_seed=getattr(args, "pro_pattern_explore_seed", None),
             pro_four_tier_eval=bool(getattr(args, "pro_four_tier_eval", False)),

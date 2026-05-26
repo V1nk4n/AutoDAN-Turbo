@@ -182,10 +182,7 @@ class HuggingFaceModel:
             temp = float(merged.get("temperature", 1.0))
             top_p = float(merged.get("top_p", 1.0))
             top_k = int(merged.get("top_k", 0)) if merged.get("top_k", None) is not None else 0
-            if temp <= 0.0:
-                merged["do_sample"] = False
-            else:
-                merged["do_sample"] = (temp != 1.0) or (top_p < 1.0) or (top_k > 0)
+            merged["do_sample"] = (temp != 1.0) or (top_p < 1.0) or (top_k > 0)
 
         return merged
 

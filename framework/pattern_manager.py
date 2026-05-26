@@ -83,71 +83,6 @@ class PatternManager:
             return 0.0
         return (x - xmin) / (xmax - xmin)
 
-    # Dynamic pattern rank: S_rank = w_rate*rate + w_avg*avg_score + w_req*req_sim (min-max per request).
-    S_RANK_W_RATE = 0.3
-    S_RANK_W_AVG = 0.3
-    S_RANK_W_REQ = 0.4
-
-    def _strategy_success_rate(self, info: Dict[str, Any]) -> float:
-        m = info.get("metrics", {}) if isinstance(info.get("metrics"), dict) else {}
-        freq = int(m.get("freq", 0))
-        trials = max(int(m.get("trial_count", 0)), freq)
-        return self._safe_rate(freq, trials)
-
-    def _build_dynamic_scored_rows(
-        self,
-        goal_emb: Any,
-        embed_fn: Callable[[str], Any],
-        *,
-        w_rate: float = S_RANK_W_RATE,
-        w_avg: float = S_RANK_W_AVG,
-        w_req: float = S_RANK_W_REQ,
-    ) -> List[Tuple[str, Dict[str, Any], float, float, float, float]]:
-        """Return rows ``(sid, info, avg_score, req_sim, rate, S_rank)`` sorted by S_rank descending."""
-        scored: List[Tuple[str, Dict[str, Any], float, float, float, float]] = []
-        rates: List[float] = []
-        avgs: List[float] = []
-        req_pos: List[float] = []
-
-        for sid, info in self.strategies.items():
-            if not isinstance(info, dict):
-                continue
-            m = info.get("metrics", {})
-            avg_s = float(m.get("avg_score", 0.0))
-            rate = self._strategy_success_rate(info)
-            ex_text = self._strategy_example_text(info)
-            ex_emb = embed_fn(ex_text) if ex_text else None
-            req_sim = (
-                self._cosine_embedding(goal_emb, ex_emb) if ex_emb is not None else 0.0
-            )
-            req_sim = max(-1.0, min(1.0, float(req_sim)))
-            rates.append(rate)
-            avgs.append(avg_s)
-            req_pos.append(max(0.0, req_sim))
-            scored.append((sid, info, avg_s, req_sim, rate, 0.0))
-
-        if not scored:
-            return []
-
-        rmin, rmax = min(rates), max(rates)
-        amin, amax = min(avgs), max(avgs)
-        rsmin, rsmax = min(req_pos), max(req_pos)
-        wr, wa, wq = float(w_rate), float(w_avg), float(w_req)
-
-        for i, (sid, info, avg_s, req_sim, rate, _) in enumerate(scored):
-            n_rate = self._minmax(rate, rmin, rmax) if len(rates) > 1 else float(rate)
-            n_avg = self._minmax(avg_s, amin, amax) if len(avgs) > 1 else float(avg_s)
-            n_req = (
-                self._minmax(req_pos[i], rsmin, rsmax)
-                if len(req_pos) > 1
-                else float(req_pos[i])
-            )
-            s_rank = wr * n_rate + wa * n_avg + wq * n_req
-            scored[i] = (sid, info, avg_s, req_sim, rate, float(s_rank))
-
-        scored.sort(key=lambda x: x[5], reverse=True)
-        return scored
-
     def _default_store(self) -> Dict[str, Any]:
         return {"analytics": self._default_analytics(), "strategies": {}}
 
@@ -567,10 +502,20 @@ class PatternManager:
         qmin, qmax = min(qualities), max(qualities)
         ranked = []
         for sid, info, rate, q in items:
+            m = info.get("metrics", {})
+            models = set(str(x) for x in m.get("successful_models", {}).keys())
+            rounds = set(
+                int(t)
+                for t in (
+                    m.get("successful_library_rounds")
+                    or m.get("successful_turns", [])
+                )
+            )
             f_norm = self._minmax(rate, rmin, rmax)
             s_norm = self._minmax(q, qmin, qmax)
-            # Legacy path (no request embedding): rate + avg_score only (30/30 weights).
-            s_rank = self.S_RANK_W_RATE * f_norm + self.S_RANK_W_AVG * s_norm
+            m_match = 1.0 if (target_model and str(target_model) in models) else 0.0
+            t_match = 1.0 if (library_round is not None and int(library_round) in rounds) else 0.0
+            s_rank = 0.3 * f_norm + 0.3 * s_norm + 0.25 * m_match + 0.15 * t_match
             raw_examples = info.get("examples", [])
             if not isinstance(raw_examples, list):
                 raw_examples = []
@@ -655,40 +600,6 @@ class PatternManager:
             "S_rank": float(s_rank),
         }
 
-    def build_dynamic_rank_scoreboard(
-        self,
-        request_text: str,
-        embed_fn: Callable[[str], Any],
-        *,
-        w_rate: float = S_RANK_W_RATE,
-        w_avg: float = S_RANK_W_AVG,
-        w_req: float = S_RANK_W_REQ,
-        max_rows: int = 80,
-    ) -> List[Dict[str, Any]]:
-        """All strategies ranked by S_rank (for threshold telemetry)."""
-        req = (request_text or "").strip()
-        goal_emb = embed_fn(req) if req else None
-        if goal_emb is None:
-            return []
-
-        scored = self._build_dynamic_scored_rows(
-            goal_emb, embed_fn, w_rate=w_rate, w_avg=w_avg, w_req=w_req
-        )
-        out: List[Dict[str, Any]] = []
-        for rank, (sid, _, avg_s, req_sim, rate, s_rank) in enumerate(
-            scored[: max(1, int(max_rows))]
-        ):
-            out.append({
-                "strategy_id": sid,
-                "rank": rank,
-                "rate": round(rate, 4),
-                "avg_score": round(avg_s, 4),
-                "req_sim": round(req_sim, 4),
-                "S_rank": round(s_rank, 4),
-                "final_blend_score": round(s_rank, 4),
-            })
-        return out
-
     def select_top_k_dynamic(
         self,
         request_text: str,
@@ -699,12 +610,11 @@ class PatternManager:
         k: int = 5,
         exploit_n: int = 3,
         explore_n: int = 2,
-        w_rate: float = S_RANK_W_RATE,
-        w_avg: float = S_RANK_W_AVG,
-        w_req: float = S_RANK_W_REQ,
+        w_avg: float = 0.6,
+        w_req: float = 0.4,
         seed: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Epsilon-greedy style selection: top ``exploit_n`` by S_rank + weighted random explore."""
+        """Epsilon-greedy style selection: top ``exploit_n`` by blended score + weighted random explore."""
         k = max(1, int(k))
         exploit_n = max(0, min(int(exploit_n), k))
         explore_n = max(0, min(int(explore_n), max(0, k - exploit_n)))
@@ -713,23 +623,36 @@ class PatternManager:
         if goal_emb is None:
             return self.select_top_k(target_model, library_round, k=k)
 
-        scored_rows = self._build_dynamic_scored_rows(
-            goal_emb, embed_fn, w_rate=w_rate, w_avg=w_avg, w_req=w_req
-        )
+        scored_rows: List[Tuple[str, Dict[str, Any], float, float, float]] = []
+        avgs: List[float] = []
+        for sid, info in self.strategies.items():
+            if not isinstance(info, dict):
+                continue
+            m = info.get("metrics", {})
+            avg_s = float(m.get("avg_score", 0.0))
+            avgs.append(avg_s)
+            ex_text = self._strategy_example_text(info)
+            ex_emb = embed_fn(ex_text) if ex_text else None
+            req_sim = self._cosine_embedding(goal_emb, ex_emb) if ex_emb is not None else 0.0
+            req_sim = max(-1.0, min(1.0, float(req_sim)))
+            scored_rows.append((sid, info, avg_s, req_sim, 0.0))
+
         if not scored_rows:
             return []
 
-        # (sid, info, avg_s, req_sim, rate, S_rank)
-        tuple_rows = [
-            (sid, info, avg_s, req_sim, rate, s_rank)
-            for sid, info, avg_s, req_sim, rate, s_rank in scored_rows
-        ]
-        exploit_pick = tuple_rows[:exploit_n]
-        exploit_sids = {sid for sid, *_ in exploit_pick}
-        remainder = [row for row in tuple_rows if row[0] not in exploit_sids]
+        amin, amax = min(avgs), max(avgs)
+        for i, (sid, info, avg_s, req_sim, _) in enumerate(scored_rows):
+            n_avg = self._minmax(avg_s, amin, amax) if len(avgs) > 1 else float(avg_s)
+            final = float(w_avg) * n_avg + float(w_req) * max(0.0, req_sim)
+            scored_rows[i] = (sid, info, avg_s, req_sim, final)
+
+        scored_rows.sort(key=lambda x: x[4], reverse=True)
+        exploit_pick = scored_rows[:exploit_n]
+        exploit_sids = {sid for sid, _, _, _, _ in exploit_pick}
+        remainder = [row for row in scored_rows if row[0] not in exploit_sids]
 
         exploit_embs: List[Any] = []
-        for sid, info, _, _, _, _ in exploit_pick:
+        for sid, info, _, _, _ in exploit_pick:
             ex_text = self._strategy_example_text(info)
             emb = embed_fn(ex_text) if ex_text else None
             if emb is not None:
@@ -746,18 +669,18 @@ class PatternManager:
 
     def _sample_explore_rows(
         self,
-        pool: List[Tuple[str, Dict[str, Any], float, float, float, float, float]],
+        pool: List[Tuple[str, Dict[str, Any], float, float, float]],
         exploit_embs: List[Any],
         explore_n: int,
         embed_fn: Callable[[str], Any],
         rng: random.Random,
-    ) -> List[Tuple[str, Dict[str, Any], float, float, float, float, float]]:
+    ) -> List[Tuple[str, Dict[str, Any], float, float, float]]:
         """Weighted random explore picks (same rule as legacy dynamic select), without replacement within one call."""
-        explore_rows: List[Tuple[str, Dict[str, Any], float, float, float, float, float]] = []
+        explore_rows: List[Tuple[str, Dict[str, Any], float, float, float]] = []
         pool = list(pool)
         for _ in range(min(explore_n, len(pool))):
             weights: List[float] = []
-            for sid, info, av, rs, _rate, _fs in pool:
+            for sid, info, av, rs, fs in pool:
                 ex_text = self._strategy_example_text(info)
                 emb = embed_fn(ex_text) if ex_text else None
                 if emb is None or not exploit_embs:
@@ -784,7 +707,7 @@ class PatternManager:
 
     def _ordered_rows_to_strategy_dicts(
         self,
-        ordered: List[Tuple[str, Dict[str, Any], float, float, float, float, float]],
+        ordered: List[Tuple[str, Dict[str, Any], float, float, float]],
         target_model: str,
         library_round: int,
         k: int,
@@ -792,16 +715,15 @@ class PatternManager:
         seen: set = set()
         out: List[Dict[str, Any]] = []
         rank_slot = 0
-        for sid, info, av, rs, rate, s_rank in ordered:
+        for sid, info, av, rs, fs in ordered:
             if sid in seen:
                 continue
             seen.add(sid)
-            row = self._strategy_row_dict(sid, info, target_model, library_round, s_rank)
+            row = self._strategy_row_dict(sid, info, target_model, library_round, fs)
             row["dynamic_rank"] = rank_slot
             row["req_sim"] = round(rs, 4)
             row["avg_score_hist"] = round(av, 4)
-            row["success_rate"] = round(rate, 4)
-            row["final_blend_score"] = round(s_rank, 4)
+            row["final_blend_score"] = round(fs, 4)
             out.append(row)
             rank_slot += 1
             if len(out) >= k:
@@ -818,9 +740,8 @@ class PatternManager:
         k: int = 5,
         exploit_n: int = 3,
         explore_n: int = 2,
-        w_rate: float = S_RANK_W_RATE,
-        w_avg: float = S_RANK_W_AVG,
-        w_req: float = S_RANK_W_REQ,
+        w_avg: float = 0.6,
+        w_req: float = 0.4,
         seed: Optional[int] = None,
         n_bundles: int = 1,
     ) -> List[List[Dict[str, Any]]]:
@@ -839,22 +760,36 @@ class PatternManager:
             single = self.select_top_k(target_model, library_round, k=k)
             return [list(single) for _ in range(n_bundles)]
 
-        scored_rows = self._build_dynamic_scored_rows(
-            goal_emb, embed_fn, w_rate=w_rate, w_avg=w_avg, w_req=w_req
-        )
+        scored_rows: List[Tuple[str, Dict[str, Any], float, float, float]] = []
+        avgs: List[float] = []
+        for sid, info in self.strategies.items():
+            if not isinstance(info, dict):
+                continue
+            m = info.get("metrics", {})
+            avg_s = float(m.get("avg_score", 0.0))
+            avgs.append(avg_s)
+            ex_text = self._strategy_example_text(info)
+            ex_emb = embed_fn(ex_text) if ex_text else None
+            req_sim = self._cosine_embedding(goal_emb, ex_emb) if ex_emb is not None else 0.0
+            req_sim = max(-1.0, min(1.0, float(req_sim)))
+            scored_rows.append((sid, info, avg_s, req_sim, 0.0))
+
         if not scored_rows:
             return [[] for _ in range(n_bundles)]
 
-        tuple_rows = [
-            (sid, info, avg_s, req_sim, rate, s_rank)
-            for sid, info, avg_s, req_sim, rate, s_rank in scored_rows
-        ]
-        exploit_pick = tuple_rows[:exploit_n]
-        exploit_sids = {sid for sid, *_ in exploit_pick}
-        remainder = [row for row in tuple_rows if row[0] not in exploit_sids]
+        amin, amax = min(avgs), max(avgs)
+        for i, (sid, info, avg_s, req_sim, _) in enumerate(scored_rows):
+            n_avg = self._minmax(avg_s, amin, amax) if len(avgs) > 1 else float(avg_s)
+            final = float(w_avg) * n_avg + float(w_req) * max(0.0, req_sim)
+            scored_rows[i] = (sid, info, avg_s, req_sim, final)
+
+        scored_rows.sort(key=lambda x: x[4], reverse=True)
+        exploit_pick = scored_rows[:exploit_n]
+        exploit_sids = {sid for sid, _, _, _, _ in exploit_pick}
+        remainder = [row for row in scored_rows if row[0] not in exploit_sids]
 
         exploit_embs: List[Any] = []
-        for sid, info, _, _, _, _ in exploit_pick:
+        for sid, info, _, _, _ in exploit_pick:
             ex_text = self._strategy_example_text(info)
             emb = embed_fn(ex_text) if ex_text else None
             if emb is not None:
@@ -879,7 +814,7 @@ class PatternManager:
                 embed_fn,
                 rng_b,
             )
-            for sid, _, _, _, _, _ in explore_rows:
+            for sid, _, _, _, _ in explore_rows:
                 reserved_explore.add(sid)
 
             ordered = list(exploit_pick) + list(explore_rows)

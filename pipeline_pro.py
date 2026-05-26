@@ -19,7 +19,6 @@ from framework.pro_constants import (
 )
 from framework.attacker import Attacker
 from framework.pro_pipeline_config import ProPipelineConfig
-from framework.pro_threshold_telemetry import ProThresholdTelemetry, threshold_config_snapshot
 
 # Terminology (PRO pipeline):
 # - **dataset stage**: warm_up / lifelong phase over the JSON dataset (`pro_warm_up`, `pro_lifelong`).
@@ -183,95 +182,6 @@ class AutoDANTurboPro:
         self._pro_log_request_id: Optional[int] = None
         self._pro_log_repeat_cur: Optional[int] = None
         self._pro_log_repeat_total: Optional[int] = None
-        self._threshold_telemetry = ProThresholdTelemetry(
-            getattr(self, "pro_telemetry_jsonl", None),
-            enabled=bool(getattr(self, "pro_enable_threshold_telemetry", True)),
-        )
-        self._telemetry_config_logged = False
-
-    def _telemetry_ctx(self) -> Dict[str, Any]:
-        ctx: Dict[str, Any] = {}
-        w = getattr(self, "_pro_log_dataset_stage", None)
-        if w:
-            ctx["pro_dataset_stage"] = str(w)
-        rid = getattr(self, "_pro_log_request_id", None)
-        if rid is not None:
-            ctx["pro_request_id"] = int(rid)
-        rc = getattr(self, "_pro_log_repeat_cur", None)
-        rt = getattr(self, "_pro_log_repeat_total", None)
-        if rc is not None and rt is not None:
-            ctx["pro_repeat"] = f"{int(rc)}/{int(rt)}"
-        ctx["phase"] = str(getattr(self, "_current_phase", "") or "")
-        return ctx
-
-    def _log_threshold(self, kind: str, **fields: Any) -> None:
-        tel = getattr(self, "_threshold_telemetry", None)
-        if tel is None or not tel.enabled:
-            return
-        tel.emit(kind, **self._telemetry_ctx(), **fields)
-
-    def _telemetry_dual_meta(
-        self, prompt: str, response: str
-    ) -> Tuple[int, Optional[Dict[str, Any]]]:
-        if not self.scorer:
-            return 0, None
-        try:
-            d = self.scorer.score_dual_detailed(prompt, response)
-            return int(d.get("J", 0)), d
-        except Exception:
-            return 0, None
-
-    def _log_eval_candidate_telemetry(
-        self,
-        *,
-        request: str,
-        ev: Dict[str, Any],
-        eval_mode: str,
-        idx: int = -1,
-        dual_meta: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        prompt = str(ev.get("prompt", "") or "")
-        response = str(ev.get("target_response", "") or "")
-        gs = self._prompt_goal_similarity(request, prompt)
-        floor = float(self.pro_goal_similarity_floor)
-        j_raw = int(ev.get("J", 0))
-        raw_jb = bool(ev.get("is_jailbroken", False))
-        success_q = bool(
-            raw_jb
-            and self._qualify_jailbreak_success(request, prompt, response)
-        )
-        fj = ev.get("fast_judge")
-        fj_dec = fj.get("decision") if isinstance(fj, dict) else None
-        fields: Dict[str, Any] = {
-            "eval_mode": eval_mode,
-            "idx": idx,
-            "goal_sim": round(gs, 4),
-            "goal_floor": floor,
-            "goal_pass": bool(gs >= floor),
-            "nll": ev.get("nll"),
-            "nll_ok": bool(ev.get("nll_ok")),
-            "score_loss": float(ev.get("score_loss", 0.0) or 0.0),
-            "J": j_raw,
-            "J_raw_jailbroken": bool(raw_jb),
-            "success_qualified": bool(success_q),
-            "is_jailbroken": bool(raw_jb),
-            "judge_lane": ev.get("judge_lane"),
-            "tier": ev.get("tier"),
-            "score_source": ev.get("score_source"),
-            "dual_called": ev.get("dual_called"),
-            "fast_judge_decision": fj_dec,
-        }
-        if dual_meta:
-            fields["judge_a"] = dual_meta.get("judge_a")
-            fields["judge_b"] = dual_meta.get("judge_b")
-            fields["dual_agree"] = dual_meta.get("dual_agree")
-        self._log_threshold("eval_candidate", **fields)
-
-    def _maybe_log_telemetry_config(self) -> None:
-        if getattr(self, "_telemetry_config_logged", False):
-            return
-        self._telemetry_config_logged = True
-        self._log_threshold("run_config", config=threshold_config_snapshot(self))
 
     @staticmethod
     def build_epoch_refine_hint_from_memory(epoch_memory: Optional[Dict[str, Any]], max_chars: int = 3500) -> str:
@@ -562,18 +472,6 @@ class AutoDANTurboPro:
                         repeats,
                         early_stop_reason,
                     )
-                    self._log_threshold(
-                        "early_stop",
-                        stage=stage,
-                        reason=early_stop_reason,
-                        repeat_idx=rep + 1,
-                        repeats_total=repeats,
-                        no_improve_streak=no_improve_streak,
-                        best_so_far=float(best_so_far),
-                        best_score_loss=float(best_score_loss),
-                        patience=int(self.pro_early_stop_patience),
-                        min_delta=float(self.pro_early_stop_min_delta),
-                    )
                     break
                 if no_improve_streak >= self.pro_early_stop_patience:
                     early_stop_reason = "plateau"
@@ -587,18 +485,6 @@ class AutoDANTurboPro:
                         early_stop_reason,
                         no_improve_streak,
                         best_so_far,
-                    )
-                    self._log_threshold(
-                        "early_stop",
-                        stage=stage,
-                        reason=early_stop_reason,
-                        repeat_idx=rep + 1,
-                        repeats_total=repeats,
-                        no_improve_streak=no_improve_streak,
-                        best_so_far=float(best_so_far),
-                        best_score_loss=float(best_score_loss),
-                        patience=int(self.pro_early_stop_patience),
-                        min_delta=float(self.pro_early_stop_min_delta),
                     )
                     break
             except Exception as e:
@@ -799,7 +685,6 @@ class AutoDANTurboPro:
         J = 0
         dual_error: Optional[str] = None
         dual_succeeded = False
-        dual_meta: Optional[Dict[str, Any]] = None
         if self.fast_judge is not None:
             try:
                 fast_judge_result = self.fast_judge.classify(prompt, response)
@@ -821,7 +706,7 @@ class AutoDANTurboPro:
             dual_started = time.perf_counter()
             self._log_pro("evaluate_tier2_dual_scorer")
             try:
-                J, dual_meta = self._telemetry_dual_meta(prompt, response)
+                J = int(self.scorer.score_dual(prompt, response))
                 dual_elapsed_ms = (time.perf_counter() - dual_started) * 1000.0
                 judge_lane = "dual"
                 dual_succeeded = True
@@ -850,28 +735,6 @@ class AutoDANTurboPro:
         is_jailbroken = int(J) == 1
 
         total_elapsed_ms = (time.perf_counter() - started) * 1000.0
-        tier2_fields: Dict[str, Any] = {
-            "nll": nll,
-            "nll_ok": bool(nll_ok),
-            "nll_min": float(self.nll_min),
-            "nll_max": float(self.nll_max),
-            "score_loss": float(score_loss),
-            "J": int(J),
-            "is_jailbroken": bool(is_jailbroken),
-            "judge_lane": judge_lane,
-            "score_source": score_source,
-            "dual_called": bool(dual_called),
-            "fast_judge_decision": (
-                fast_judge_result.get("decision")
-                if isinstance(fast_judge_result, dict)
-                else None
-            ),
-        }
-        if dual_meta:
-            tier2_fields["judge_a"] = dual_meta.get("judge_a")
-            tier2_fields["judge_b"] = dual_meta.get("judge_b")
-            tier2_fields["dual_agree"] = dual_meta.get("dual_agree")
-        self._log_threshold("eval_tier2", **tier2_fields)
         return {
             "is_jailbroken": bool(is_jailbroken),
             "tier": "tier2_hybrid",
@@ -972,104 +835,6 @@ class AutoDANTurboPro:
             if resp == target:
                 return g
         return {}
-
-    def _structured_item_index_for_prompt(
-        self, prompt: Any, structured_items: List[Any]
-    ) -> int:
-        """Index in ``structured_items`` whose ``Response`` equals ``prompt`` (strip match)."""
-        target = self._normalize_prompt_for_match(prompt)
-        if not target:
-            return -1
-        for i, g in enumerate(structured_items or []):
-            if not isinstance(g, dict):
-                continue
-            resp = self._normalize_prompt_for_match(g.get(PRO_GENERATOR_RESPONSE_KEY))
-            if resp == target:
-                return i
-        return -1
-
-    def _source_strategy_rows_for_prompt(
-        self,
-        prompt: Any,
-        structured_items: List[Any],
-        top_strategies: list,
-    ) -> List[Dict[str, Any]]:
-        """Strategy rows from the generator context that produced this prompt (bundle slot or shared list)."""
-        idx = self._structured_item_index_for_prompt(prompt, structured_items)
-        bundles = getattr(self, "_pro_strategy_bundles_for_repeat", None)
-        n_cand = int(self.pro_n_candidates)
-        if (
-            isinstance(bundles, list)
-            and len(bundles) == n_cand
-            and idx >= 0
-            and idx < len(bundles)
-        ):
-            return [s for s in (bundles[idx] or []) if isinstance(s, dict)]
-        return [s for s in (top_strategies or []) if isinstance(s, dict)]
-
-    def _use_prompt_strategy_attribution(self) -> bool:
-        return bool(
-            getattr(self, "pro_enable_prompt_strategy_attribution", True)
-            and self.retrieval is not None
-            and self.pattern_manager
-        )
-
-    def _attribute_strategy_ids_by_prompt(
-        self, prompt_used: str, source_rows: list
-    ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        """Match prompt embedding to strategy profiles from the generation context.
-
-        Returns ``(matched_ids, details)`` where details entries are
-        ``{strategy_id, sim}`` sorted by sim descending.
-        """
-        details: List[Dict[str, Any]] = []
-        if not self._use_prompt_strategy_attribution():
-            return [], details
-        raw_prompt = str(prompt_used or "").strip()
-        if len(raw_prompt) < 8:
-            return [], details
-        prompt_emb = self._embed_with_cache(raw_prompt[:4000])
-        if prompt_emb is None:
-            return [], details
-        min_sim = float(self.pro_strategy_embed_min_sim)
-        matched: List[str] = []
-        seen: set = set()
-        for row in source_rows or []:
-            if not isinstance(row, dict):
-                continue
-            sid = str(row.get("strategy_id") or "").strip()
-            if not sid or sid in seen:
-                continue
-            seen.add(sid)
-            if sid not in self.pattern_manager.strategies:
-                continue
-            profile = self._build_strategy_profile_text(sid)
-            if not profile:
-                continue
-            prof_emb = self._embed_with_cache(profile[:4000])
-            if prof_emb is None:
-                continue
-            sim = float(self.cosine_sim(prompt_emb, prof_emb))
-            details.append({"strategy_id": sid, "sim": round(sim, 4)})
-            if sim >= min_sim:
-                matched.append(sid)
-        details.sort(key=lambda x: float(x.get("sim", 0.0)), reverse=True)
-        max_sim = float(details[0]["sim"]) if details else None
-        second_sim = float(details[1]["sim"]) if len(details) > 1 else None
-        self._log_threshold(
-            "strategy_attribution",
-            min_sim_threshold=min_sim,
-            n_source=len(source_rows or []),
-            n_scored=len(details),
-            matched_ids=list(matched),
-            match_count=len(matched),
-            max_sim=max_sim,
-            second_sim=second_sim,
-            margin=(max_sim - second_sim) if max_sim is not None and second_sim is not None else None,
-            similarities=details,
-            prompt_len=len(raw_prompt),
-        )
-        return matched, details
 
     def _extract_strategy_claim_from_record(self, generator_record: dict) -> Tuple[str, str]:
         """Return (primary_claim, claim_source) from structured generator output."""
@@ -1189,28 +954,8 @@ class AutoDANTurboPro:
         scored_filtered = [s for s in scored if s[0] >= self.pro_goal_similarity_floor]
         if not scored_filtered:
             if strict_floor:
-                n_selected = 0
-            else:
-                scored_filtered = sorted(scored, key=lambda x: x[0], reverse=True)[: self.pro_top_k]
-                n_selected = len(scored_filtered)
-        else:
-            n_selected = len(scored_filtered)
-        floor = float(self.pro_goal_similarity_floor)
-        self._log_threshold(
-            "semantic_prune",
-            floor=floor,
-            strict_floor=bool(strict_floor),
-            n_candidates=len(candidates),
-            n_above_floor=sum(1 for s, _ in scored if float(s) >= floor),
-            n_selected=n_selected,
-            top_k=int(self.pro_top_k),
-            similarities=[
-                {"idx": i, "sim": round(float(s), 4)}
-                for i, (s, _) in enumerate(
-                    sorted(scored, key=lambda x: x[0], reverse=True)
-                )
-            ],
-        )
+                return []
+            scored_filtered = sorted(scored, key=lambda x: x[0], reverse=True)[: self.pro_top_k]
         return scored_filtered
 
     @staticmethod
@@ -1377,18 +1122,15 @@ class AutoDANTurboPro:
                 nll = None
         return {"nll": nll, "score_loss": float(score_loss), "nll_ok": bool(nll_ok)}
 
-    def _evaluate_dual_j_only(
-        self, prompt: str, response: str
-    ) -> Tuple[int, float, Optional[Dict[str, Any]]]:
+    def _evaluate_dual_j_only(self, prompt: str, response: str) -> Tuple[int, float]:
         started = time.perf_counter()
         try:
-            J, meta = self._telemetry_dual_meta(prompt, response)
+            J = int(self.scorer.score_dual(prompt, response))
             J = 1 if J != 0 else 0
         except Exception as e:
             self.logger.error("four_tier dual judge failed: %s", e)
             J = 0
-            meta = None
-        return J, (time.perf_counter() - started) * 1000.0, meta
+        return J, (time.perf_counter() - started) * 1000.0
 
     def _compute_prompt_diversity_index(self, prompt: str) -> float:
         """1 − max cosine(prompt, stored example snippets across the library)."""
@@ -1505,10 +1247,9 @@ class AutoDANTurboPro:
                     # Fast judge may only short-circuit refusals; non-refusal still needs dual.
                 except Exception as e:
                     self.logger.warning("four_tier FastJudge failed, using dual: %s", e)
-            J, _ms, dual_meta = self._evaluate_dual_j_only(prompt, response)
+            J, _ms = self._evaluate_dual_j_only(prompt, response)
             dual_calls += 1
             row["J"] = int(J)
-            row["_dual_meta"] = dual_meta
             row["dual_called"] = True
             if J == 1 and self._qualify_jailbreak_success(request, prompt, response):
                 row["judge_lane"] = "dual"
@@ -1528,14 +1269,6 @@ class AutoDANTurboPro:
         stats["verifier_top_n"] = verifier_n
         stats["ms_total"] = (time.perf_counter() - t0) * 1000.0
         stats["request_preview"] = str(request)[:120]
-        for row in rows:
-            self._log_eval_candidate_telemetry(
-                request=request,
-                ev=row,
-                eval_mode="four_tier",
-                idx=int(row.get("idx", -1)),
-                dual_meta=row.get("_dual_meta"),
-            )
         return rows, stats
 
     @staticmethod
@@ -2070,7 +1803,6 @@ class AutoDANTurboPro:
                         k=int(select_k),
                         exploit_n=int(self.pro_pattern_exploit_n),
                         explore_n=int(self.pro_pattern_explore_n),
-                        w_rate=float(self.pro_pattern_rank_w_rate),
                         w_avg=float(self.pro_pattern_rank_w_avg),
                         w_req=float(self.pro_pattern_rank_w_req),
                         seed=self.pro_pattern_explore_seed,
@@ -2088,7 +1820,6 @@ class AutoDANTurboPro:
                         k=int(select_k),
                         exploit_n=int(self.pro_pattern_exploit_n),
                         explore_n=int(self.pro_pattern_explore_n),
-                        w_rate=float(self.pro_pattern_rank_w_rate),
                         w_avg=float(self.pro_pattern_rank_w_avg),
                         w_req=float(self.pro_pattern_rank_w_req),
                         seed=self.pro_pattern_explore_seed,
@@ -2135,34 +1866,6 @@ class AutoDANTurboPro:
                 "bundle_explore_strategy_ids": bundle_explore_ids,
             },
         )
-        if use_dynamic and self.retrieval is not None and self.pattern_manager:
-            try:
-                board = self.pattern_manager.build_dynamic_rank_scoreboard(
-                    request,
-                    lambda t: self._embed_with_cache(t),
-                    w_rate=float(self.pro_pattern_rank_w_rate),
-                    w_avg=float(self.pro_pattern_rank_w_avg),
-                    w_req=float(self.pro_pattern_rank_w_req),
-                )
-                selected = {
-                    str(s.get("strategy_id"))
-                    for s in top_strategies
-                    if isinstance(s, dict) and s.get("strategy_id")
-                }
-                for row in board:
-                    row["selected"] = row.get("strategy_id") in selected
-                self._log_threshold(
-                    "pattern_rank",
-                    w_rate=float(self.pro_pattern_rank_w_rate),
-                    w_avg=float(self.pro_pattern_rank_w_avg),
-                    w_req=float(self.pro_pattern_rank_w_req),
-                    n_library=len(board),
-                    n_selected=len(selected),
-                    selected_ids=sorted(selected),
-                    rank_table=board[:48],
-                )
-            except Exception as e:
-                self.logger.warning("pattern_rank telemetry failed: %s", e)
         return top_strategies
 
     def _repeat_attack_structured_generation(
@@ -2431,14 +2134,6 @@ class AutoDANTurboPro:
             request_time_by_stage.get("evaluate_candidates_batch", 0.0) + elapsed_ms
         )
         eval_mode = "four_tier" if use_four else ("staged" if staged_on else "legacy_hybrid")
-        if eval_mode != "four_tier":
-            for idx, ev in enumerate(candidate_evaluations):
-                self._log_eval_candidate_telemetry(
-                    request=request,
-                    ev=ev,
-                    eval_mode=eval_mode,
-                    idx=idx,
-                )
         self._log_stage(
             step=1,
             stage="evaluate_candidates_batch",
@@ -2452,6 +2147,7 @@ class AutoDANTurboPro:
                 "evaluations": [
                     {
                         "idx": idx,
+                        "score_loss": ev.get("score_loss"),
                         "score_loss": ev.get("score_loss"),
                         "is_jailbroken": ev.get("is_jailbroken"),
                         "J": ev.get("J"),
@@ -2518,32 +2214,6 @@ class AutoDANTurboPro:
                 "prompt_preview": str(best_candidate.get("prompt", ""))[:140],
             },
         )
-        floor = float(self.pro_goal_similarity_floor)
-        j_raw_ok = bool(best_candidate.get("is_jailbroken", False))
-        self._log_threshold(
-            "repeat_summary",
-            success=bool(success),
-            best_score_loss=float(best_score_loss),
-            goal_sim=round(goal_sim, 4),
-            goal_floor=floor,
-            goal_pass=bool(goal_sim >= floor),
-            J=best_candidate.get("J"),
-            J_raw_jailbroken=j_raw_ok,
-            success_qualified=bool(success),
-            is_jailbroken=j_raw_ok,
-            judge_lane=best_candidate.get("judge_lane"),
-            n_candidates=len(candidate_evaluations),
-            n_jailbroken=len(jailbroken),
-            success_gated_out=int(gated_out),
-            nll=best_candidate.get("nll"),
-            tier=best_candidate.get("tier"),
-            score_source=best_candidate.get("score_source"),
-            fast_judge_decision=(
-                (best_candidate.get("fast_judge") or {}).get("decision")
-                if isinstance(best_candidate.get("fast_judge"), dict)
-                else None
-            ),
-        )
         repeat_feedback_payload = None
         if (not success) and failed_branches:
             bf = max(failed_branches, key=_loss_key)
@@ -2575,44 +2245,19 @@ class AutoDANTurboPro:
     def _repeat_attack_pattern_save_attempt_on_failure(
         self,
         best_candidate: Dict[str, Any],
-        top_strategies: list,
-        structured_items: List[Any],
+        strategy_id: Optional[str],
         step_time_by_stage: Dict[str, float],
         request_time_by_stage: Dict[str, float],
     ) -> None:
-        if best_candidate.get("is_jailbroken") or not self.pattern_manager:
+        if best_candidate["is_jailbroken"] or not self.pattern_manager or not strategy_id:
             return
-        prompt_used = str(best_candidate.get("prompt", "") or "")
-        source_rows = self._source_strategy_rows_for_prompt(
-            prompt_used, structured_items, top_strategies
-        )
-        matched_ids: List[str] = []
-        attrib_details: List[Dict[str, Any]] = []
-        slot_idx = self._structured_item_index_for_prompt(prompt_used, structured_items)
-        if self._use_prompt_strategy_attribution():
-            matched_ids, attrib_details = self._attribute_strategy_ids_by_prompt(
-                prompt_used, source_rows
-            )
-        else:
-            legacy_id = self._repeat_attack_resolve_strategy_id(
-                best_candidate, structured_items, top_strategies
-            )
-            if legacy_id:
-                matched_ids = [legacy_id]
-        if not matched_ids:
-            self.logger.info(
-                "[PRO] pattern_save_attempt skip: no strategy above min_sim=%.4f slot=%s source_ids=%s",
-                float(self.pro_strategy_embed_min_sim),
-                slot_idx,
-                [str(r.get("strategy_id")) for r in source_rows if isinstance(r, dict)],
-            )
+        if strategy_id not in self.pattern_manager.strategies:
             return
-        t0 = time.perf_counter()
-        n_applied = self.pattern_manager.save_attempts(matched_ids)
-        elapsed_attempt_ms = (time.perf_counter() - t0) * 1000.0
-        step_time_by_stage["pattern_save_attempt"] = (
-            step_time_by_stage.get("pattern_save_attempt", 0.0) + elapsed_attempt_ms
+        (_, elapsed_attempt_ms) = self._time_call(
+            self.pattern_manager.save_attempt,
+            strategy_id,
         )
+        step_time_by_stage["pattern_save_attempt"] = elapsed_attempt_ms
         request_time_by_stage["pattern_save_attempt"] = (
             request_time_by_stage.get("pattern_save_attempt", 0.0) + elapsed_attempt_ms
         )
@@ -2620,27 +2265,7 @@ class AutoDANTurboPro:
             step=1,
             stage="pattern_save_attempt",
             duration_ms=elapsed_attempt_ms,
-            output_data={
-                "attribution": "prompt_embedding",
-                "candidate_slot": slot_idx,
-                "strategy_ids": matched_ids,
-                "n_attempts": int(n_applied),
-                "min_sim": float(self.pro_strategy_embed_min_sim),
-                "similarities": attrib_details,
-            },
-        )
-        self.logger.info(
-            "[PRO] pattern_save_attempt failure attributed_ids=%s slot=%s min_sim=%.4f",
-            matched_ids,
-            slot_idx,
-            float(self.pro_strategy_embed_min_sim),
-        )
-        self._log_threshold(
-            "library_credit",
-            outcome="failure_save_attempt",
-            strategy_ids=matched_ids,
-            slot_idx=slot_idx,
-            min_sim=float(self.pro_strategy_embed_min_sim),
+            output_data={"strategy_id": strategy_id, "n_attempts": 1},
         )
         self.pattern_manager.persist_if_dirty()
 
@@ -2648,133 +2273,83 @@ class AutoDANTurboPro:
         self,
         request: str,
         best_candidate: Dict[str, Any],
-        top_strategies: list,
+        strategy_id: Optional[str],
         library_round: int,
         step_time_by_stage: Dict[str, float],
         request_time_by_stage: Dict[str, float],
         *,
         structured_items: Optional[List[Any]] = None,
     ) -> None:
-        if not best_candidate.get("is_jailbroken") or not self.pattern_manager:
+        if not best_candidate["is_jailbroken"]:
             return
-        prompt_used = str(best_candidate.get("prompt", "") or "")
-        structured_items = structured_items or []
-        generator_record = self._find_generator_record_for_prompt(prompt_used, structured_items)
+        prompt_used = best_candidate.get("prompt", "")
+        generator_record = self._find_generator_record_for_prompt(
+            prompt_used, structured_items or []
+        )
         generator_strategy_claim, generator_label_source = self._generator_label_for_summarize(
             generator_record
         )
-        (keyword_matched_id, elapsed_kw_ms) = self._time_call(
-            self.pattern_manager.match_keywords, prompt_used
-        )
-        step_time_by_stage["pattern_match_or_summarize"] = elapsed_kw_ms
+        matched_id = None
+        if not self.pattern_manager:
+            return
+        (matched_id, elapsed_ms) = self._time_call(self.pattern_manager.match_keywords, prompt_used)
+        step_time_by_stage["pattern_match_or_summarize"] = elapsed_ms
         request_time_by_stage["pattern_match_or_summarize"] = (
-            request_time_by_stage.get("pattern_match_or_summarize", 0.0) + elapsed_kw_ms
+            request_time_by_stage.get("pattern_match_or_summarize", 0.0) + elapsed_ms
         )
 
-        source_rows = self._source_strategy_rows_for_prompt(
-            prompt_used, structured_items, top_strategies
-        )
-        slot_idx = self._structured_item_index_for_prompt(prompt_used, structured_items)
-        credited_ids: List[str] = []
-        attrib_details: List[Dict[str, Any]] = []
-        if self._use_prompt_strategy_attribution():
-            credited_ids, attrib_details = self._attribute_strategy_ids_by_prompt(
-                prompt_used, source_rows
+        # Generator-credited strategy (direction 1): ``save_success`` uses the same
+        # ``strategy_id`` as trials (``_resolve_strategy_id``). Keyword match
+        # is diagnostic only (see ``keyword_matched_id`` in logs).
+        credited_id = strategy_id
+        if credited_id and credited_id in self.pattern_manager.strategies:
+            (_, elapsed_att) = self._time_call(
+                self.pattern_manager.save_attempt,
+                credited_id,
             )
-        else:
-            legacy_id = self._repeat_attack_resolve_strategy_id(
-                best_candidate, structured_items, top_strategies
-            )
-            if legacy_id:
-                credited_ids = [legacy_id]
-
-        score_loss = self._branch_score_loss(best_candidate)
-        extra_metrics = self._four_tier_save_success_extra(best_candidate, prompt_used)
-        target_resp = best_candidate.get("target_response")
-
-        def _persist_success_for_ids(ids: List[str], *, path: str) -> None:
-            if not ids:
-                return
-            t_att0 = time.perf_counter()
-            n_att = self.pattern_manager.save_attempts(ids)
-            elapsed_att = (time.perf_counter() - t_att0) * 1000.0
             step_time_by_stage["pattern_save_attempt"] = (
                 step_time_by_stage.get("pattern_save_attempt", 0.0) + elapsed_att
             )
             request_time_by_stage["pattern_save_attempt"] = (
                 request_time_by_stage.get("pattern_save_attempt", 0.0) + elapsed_att
             )
-            saved_ids: List[str] = []
-            total_save_ms = 0.0
-            for sid in ids:
-                (save_ok, elapsed_save_ms) = self._time_call(
-                    self.pattern_manager.save_success,
-                    sid,
-                    self.target_model_key,
-                    library_round,
-                    score_loss,
-                    prompt_used,
-                    target_resp,
-                    extra_metrics=extra_metrics,
-                )
-                total_save_ms += float(elapsed_save_ms)
-                if save_ok:
-                    saved_ids.append(sid)
-            step_time_by_stage["pattern_save_success"] = (
-                step_time_by_stage.get("pattern_save_success", 0.0) + total_save_ms
+            self._log_stage(
+                step=1,
+                stage="pattern_save_attempt",
+                duration_ms=elapsed_att,
+                output_data={"strategy_id": credited_id, "n_attempts": 1},
             )
+            self.pattern_manager.persist_if_dirty()
+            self.logger.info(
+                "Pattern save (generator-credited): strategy_id=%s keyword_matched_id=%s",
+                credited_id,
+                matched_id,
+            )
+            (save_ok, elapsed_save_ms) = self._time_call(
+                self.pattern_manager.save_success,
+                credited_id,
+                self.target_model_key,
+                library_round,
+                self._branch_score_loss(best_candidate),
+                prompt_used,
+                best_candidate["target_response"],
+                extra_metrics=self._four_tier_save_success_extra(best_candidate, str(prompt_used)),
+            )
+            step_time_by_stage["pattern_save_success"] = elapsed_save_ms
             request_time_by_stage["pattern_save_success"] = (
-                request_time_by_stage.get("pattern_save_success", 0.0) + total_save_ms
+                request_time_by_stage.get("pattern_save_success", 0.0) + elapsed_save_ms
             )
             self._log_stage(
                 step=1,
                 stage="pattern_save_success",
-                duration_ms=total_save_ms,
+                duration_ms=elapsed_save_ms,
                 output_data={
-                    "attribution": "prompt_embedding",
-                    "path": path,
-                    "candidate_slot": slot_idx,
-                    "strategy_ids": ids,
-                    "saved_ids": saved_ids,
-                    "n_attempts": int(n_att),
-                    "min_sim": float(self.pro_strategy_embed_min_sim),
-                    "similarities": attrib_details,
-                    "keyword_matched_id": keyword_matched_id,
+                    "strategy_id": credited_id,
+                    "saved": bool(save_ok),
+                    "keyword_matched_id": matched_id,
                 },
             )
-            self.logger.info(
-                "[PRO] pattern_save_success path=%s attributed_ids=%s saved=%s slot=%s",
-                path,
-                ids,
-                saved_ids,
-                slot_idx,
-            )
-            self.pattern_manager.persist_if_dirty()
-
-        # Jailbreak success routing (embedding attribution):
-        # - exactly one matched id → fast path: credit that strategy only
-        # - zero or multiple matches → slow path: summarizer abstracts combo / novel pattern
-        success_routing = "slow_path"
-        if len(credited_ids) == 1:
-            success_routing = "single_strategy_fast"
-            _persist_success_for_ids(credited_ids, path="embedding_single_strategy")
         else:
-            if len(credited_ids) >= 2:
-                self.logger.info(
-                    "[PRO] slow_path_summarize: combo attribution (%d ids >= min_sim=%.4f); "
-                    "skip per-id save_success slot=%s ids=%s",
-                    len(credited_ids),
-                    float(self.pro_strategy_embed_min_sim),
-                    slot_idx,
-                    credited_ids,
-                )
-            else:
-                self.logger.info(
-                    "[PRO] slow_path_summarize: no bundle strategy >= min_sim=%.4f slot=%s source_ids=%s",
-                    float(self.pro_strategy_embed_min_sim),
-                    slot_idx,
-                    [str(r.get("strategy_id")) for r in source_rows if isinstance(r, dict)],
-                )
             try:
                 self.logger.info(
                     "[PRO] slow_path_summarize generator_label_source=%s label_preview=%s",
@@ -2788,56 +2363,111 @@ class AutoDANTurboPro:
                     generator_strategy_claim,
                     generator_label_source,
                 )
-                step_time_by_stage["pattern_match_or_summarize"] = (
-                    step_time_by_stage.get("pattern_match_or_summarize", 0.0)
-                    + float(elapsed_summarize_ms)
-                )
-                request_time_by_stage["pattern_match_or_summarize"] = (
-                    request_time_by_stage.get("pattern_match_or_summarize", 0.0)
-                    + float(elapsed_summarize_ms)
-                )
+                step_time_by_stage["pattern_match_or_summarize"] += elapsed_summarize_ms
+                request_time_by_stage["pattern_match_or_summarize"] += elapsed_summarize_ms
             except Exception as summarize_error:
                 self.logger.info("Slow Path: Failed to summarize unseen pattern: %s", summarize_error)
                 new_strategy_json = {}
             new_id = self.pattern_manager.add_new_strategy(
                 new_strategy_json,
-                initial_score=score_loss,
+                initial_score=self._branch_score_loss(best_candidate),
             )
             if new_id:
                 self.logger.info("Slow Path: Discovered new test pattern %s", new_id)
-                _persist_success_for_ids(
-                    [new_id],
-                    path="slow_path_combo_or_no_match"
-                    if len(credited_ids) >= 2
-                    else "slow_path_no_embedding_match",
+                (_, elapsed_att) = self._time_call(
+                    self.pattern_manager.save_attempt,
+                    new_id,
+                )
+                step_time_by_stage["pattern_save_attempt"] = (
+                    step_time_by_stage.get("pattern_save_attempt", 0.0) + elapsed_att
+                )
+                request_time_by_stage["pattern_save_attempt"] = (
+                    request_time_by_stage.get("pattern_save_attempt", 0.0) + elapsed_att
+                )
+                self._log_stage(
+                    step=1,
+                    stage="pattern_save_attempt",
+                    duration_ms=elapsed_att,
+                    output_data={"strategy_id": new_id, "n_attempts": 1},
+                )
+                self.pattern_manager.persist_if_dirty()
+                (save_ok, elapsed_save_ms) = self._time_call(
+                    self.pattern_manager.save_success,
+                    new_id,
+                    self.target_model_key,
+                    library_round,
+                    self._branch_score_loss(best_candidate),
+                    prompt_used,
+                    best_candidate["target_response"],
+                    extra_metrics=self._four_tier_save_success_extra(best_candidate, str(prompt_used)),
+                )
+                step_time_by_stage["pattern_save_success"] = elapsed_save_ms
+                request_time_by_stage["pattern_save_success"] = (
+                    request_time_by_stage.get("pattern_save_success", 0.0) + elapsed_save_ms
+                )
+                self._log_stage(
+                    step=1,
+                    stage="pattern_save_success",
+                    duration_ms=elapsed_save_ms,
+                    output_data={
+                        "strategy_id": new_id,
+                        "saved": bool(save_ok),
+                        "keyword_matched_id": matched_id,
+                    },
                 )
             else:
-                self.logger.info("Slow Path: Summarizer output invalid; no pattern library update.")
-
-        self._log_threshold(
-            "library_credit",
-            outcome=success_routing,
-            credited_ids=list(credited_ids),
-            match_count=len(credited_ids),
-            slot_idx=slot_idx,
-            score_loss=float(score_loss),
-            min_sim=float(self.pro_strategy_embed_min_sim),
-            keyword_matched_id=keyword_matched_id,
-        )
+                self.logger.info(
+                    "Slow Path: Summarizer output invalid, fallback to generator-resolved strategy."
+                )
+                if strategy_id and strategy_id in self.pattern_manager.strategies:
+                    (_, elapsed_att) = self._time_call(
+                        self.pattern_manager.save_attempt,
+                        strategy_id,
+                    )
+                    step_time_by_stage["pattern_save_attempt"] = (
+                        step_time_by_stage.get("pattern_save_attempt", 0.0) + elapsed_att
+                    )
+                    request_time_by_stage["pattern_save_attempt"] = (
+                        request_time_by_stage.get("pattern_save_attempt", 0.0) + elapsed_att
+                    )
+                    self._log_stage(
+                        step=1,
+                        stage="pattern_save_attempt",
+                        duration_ms=elapsed_att,
+                        output_data={"strategy_id": strategy_id, "n_attempts": 1},
+                    )
+                    self.pattern_manager.persist_if_dirty()
+                    (save_ok, elapsed_save_ms) = self._time_call(
+                        self.pattern_manager.save_success,
+                        strategy_id,
+                        self.target_model_key,
+                        library_round,
+                        self._branch_score_loss(best_candidate),
+                        prompt_used,
+                        best_candidate["target_response"],
+                        extra_metrics=self._four_tier_save_success_extra(best_candidate, str(prompt_used)),
+                    )
+                    step_time_by_stage["pattern_save_success"] = elapsed_save_ms
+                    request_time_by_stage["pattern_save_success"] = (
+                        request_time_by_stage.get("pattern_save_success", 0.0) + elapsed_save_ms
+                    )
+                    self._log_stage(
+                        step=1,
+                        stage="pattern_save_success",
+                        duration_ms=elapsed_save_ms,
+                        output_data={
+                            "strategy_id": strategy_id,
+                            "saved": bool(save_ok),
+                            "keyword_matched_id": matched_id,
+                        },
+                    )
         self._log_stage(
             step=1,
             stage="pattern_match_or_summarize",
             duration_ms=step_time_by_stage.get("pattern_match_or_summarize", 0.0),
             output_data={
-                "keyword_matched_id": keyword_matched_id,
-                "attributed_strategy_ids": credited_ids,
-                "embedding_match_count": len(credited_ids),
-                "jailbreak_success_routing": success_routing,
-                "candidate_slot": slot_idx,
-                "source_strategy_ids": [
-                    str(r.get("strategy_id")) for r in source_rows if isinstance(r, dict)
-                ],
-                "similarities": attrib_details,
+                "keyword_matched_id": matched_id,
+                "generator_credited_strategy_id": strategy_id,
             },
         )
 
@@ -2881,7 +2511,6 @@ class AutoDANTurboPro:
         self._staged_eval_spent_ms = 0.0
         self._staged_eval_stats_current_request = None
         self._pro_strategy_bundles_for_repeat = None
-        self._maybe_log_telemetry_config()
         self._log_stage(
             step=0,
             stage="request_start",
@@ -2949,33 +2578,22 @@ class AutoDANTurboPro:
                 improved_variable_at_repeat_start,
             )
         )
-        if self._use_prompt_strategy_attribution():
-            prompt_used = str(best_candidate.get("prompt", "") or "")
-            source_rows = self._source_strategy_rows_for_prompt(
-                prompt_used, structured_items, top_strategies
-            )
-            attributed_ids, attrib_details = self._attribute_strategy_ids_by_prompt(
-                prompt_used, source_rows
-            )
-            self.logger.info(
-                "[PRO] prompt_strategy_attribution slot=%s ids=%s min_sim=%.4f details=%s",
-                self._structured_item_index_for_prompt(prompt_used, structured_items),
-                attributed_ids,
-                float(self.pro_strategy_embed_min_sim),
-                attrib_details,
-            )
+        strategy_id = self._repeat_attack_resolve_strategy_id(
+            best_candidate,
+            structured_items,
+            top_strategies,
+        )
 
         self._repeat_attack_pattern_save_attempt_on_failure(
             best_candidate,
-            top_strategies,
-            structured_items,
+            strategy_id,
             step_time_by_stage,
             request_time_by_stage,
         )
         self._repeat_attack_pattern_library_on_jailbreak(
             request,
             best_candidate,
-            top_strategies,
+            strategy_id,
             library_round,
             step_time_by_stage,
             request_time_by_stage,

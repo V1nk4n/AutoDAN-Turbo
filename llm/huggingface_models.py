@@ -164,6 +164,29 @@ class HuggingFaceModel:
             else:
                 print(f"⚠️ Warning: No chat template available (neither custom nor tokenizer default)")
         print("Model loaded with automatic device mapping across GPUs.")
+        self._ensure_pad_token()
+
+    def _ensure_pad_token(self) -> None:
+        """Llama/Gemma tokenizers often ship without a pad token; batch encode/pad require one."""
+        tok = self.tokenizer
+        if tok.pad_token_id is not None:
+            if hasattr(self, "model") and getattr(self.model.config, "pad_token_id", None) is None:
+                self.model.config.pad_token_id = tok.pad_token_id
+            return
+        if tok.eos_token is not None:
+            tok.pad_token = tok.eos_token
+        elif getattr(tok, "unk_token", None) is not None:
+            tok.pad_token = tok.unk_token
+        else:
+            tok.add_special_tokens({"pad_token": "<|pad|>"})
+            if hasattr(self, "model"):
+                self.model.resize_token_embeddings(len(tok))
+        if hasattr(self, "model") and tok.pad_token_id is not None:
+            self.model.config.pad_token_id = tok.pad_token_id
+
+    def _pad_token_id(self):
+        self._ensure_pad_token()
+        return self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
 
     def _resolve_generation_kwargs(self, kwargs):
         """
@@ -256,12 +279,7 @@ class HuggingFaceModel:
         plain_texts = []
         for messages in batch_messages:
             plain_texts.append(self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
-        inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-        
-        input_ids = inputs["input_ids"]
-        attention_mask = inputs["attention_mask"]
-        batch_size = input_ids.shape[0]
+        self._ensure_pad_token()
 
         max_total_length = 8192
         min_new_tokens = 16
@@ -270,15 +288,14 @@ class HuggingFaceModel:
 
         row_id_lists = []
         row_truncated = []
-        for i in range(batch_size):
-            input_len = int(attention_mask[i].sum().item())
-            ids = input_ids[i, :input_len].detach().cpu()
-            if input_len >= max_total_length:
+        for plain_text in plain_texts:
+            ids = self.tokenizer.encode(plain_text, truncation=True)
+            if len(ids) >= max_total_length:
                 ids = ids[-truncate_length:]
                 row_truncated.append(True)
             else:
                 row_truncated.append(False)
-            row_id_lists.append(ids.tolist())
+            row_id_lists.append(ids)
         
         padded = self.tokenizer.pad(
             {"input_ids": row_id_lists},
@@ -445,13 +462,8 @@ class HuggingFaceModel:
             plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             plain_text += condition
             plain_texts.append(plain_text)
-        
-        inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
-        input_ids = inputs["input_ids"]
-        attention_mask = inputs["attention_mask"]
-        batch_size = input_ids.shape[0]
+        self._ensure_pad_token()
 
         max_total_length = 8192
         min_new_tokens = 16
@@ -460,16 +472,14 @@ class HuggingFaceModel:
 
         row_id_lists = []
         row_truncated = []
-
-        for i in range(batch_size):
-            input_len = int(attention_mask[i].sum().item())
-            ids = input_ids[i, :input_len].detach().cpu()
-            if input_len >= max_total_length:
+        for plain_text in plain_texts:
+            ids = self.tokenizer.encode(plain_text, truncation=True)
+            if len(ids) >= max_total_length:
                 ids = ids[-truncate_length:]
                 row_truncated.append(True)
             else:
                 row_truncated.append(False)
-            row_id_lists.append(ids.tolist())
+            row_id_lists.append(ids)
         
         padded = self.tokenizer.pad(
             {"input_ids": row_id_lists},
@@ -530,6 +540,7 @@ class HuggingFaceModel:
             ]
             plain_texts.append(self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
 
+        self._ensure_pad_token()
         inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
 
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}

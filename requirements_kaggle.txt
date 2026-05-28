@@ -16,4 +16,3 @@ mistralai
 google-generativeai
 matplotlib
 faiss-cpu
-bitsandbytes

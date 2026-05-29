@@ -219,6 +219,5 @@ logs/lifelong_attack_log.json
 logs/*debug*
 
 
-llm/chat_templates/generation_configs/Qwen3-0.6B.json
 llm/chat_templates/generation_configs/Qwen3.5-0.8B-Claude-4.6-Opus-Reasoning-Distilled-GGUF.json
 llm/chat_templates/generation_configs/gemma-2-2b-it.json

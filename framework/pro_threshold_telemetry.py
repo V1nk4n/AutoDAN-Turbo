@@ -22,6 +22,7 @@ THRESHOLD_CONFIG_KEYS = (
     "pro_fast_judge_min_len",
     "pro_enable_fast_judge",
     "pro_four_tier_eval",
+    "pro_hybrid_mfps_four_tier",
     "pro_verifier_top_n",
     "pro_dynamic_pattern_select",
     "pro_pattern_exploit_n",

@@ -23,7 +23,7 @@ RESPONSE_PARSE_RE = re.compile(
 )
 
 class AutoDANTurboPro():
-    def __init__(self, turbo_framework: dict, data, target, epochs=150, warm_up_iterations=1, lifelong_iterations=4, log_every=10, pro_n_candidates: int = 4, pro_top_k: int = 2, pro_score_threshold: float = 0.5, target_max_new_tokens: int = 150, target_model_key: str = "", nll_min = 0.0, nll_max = 10.0, per_request_epochs: bool = False, pro_early_stop_patience: int = 5, pro_early_stop_min_delta: float = 0.01, pro_refusal_streak_stop: int = 4, pro_feedback_every: int = 2, pro_feedback_min_quality: float = 0.35, pro_phase_split: float = 0.7, pro_explore_n_candidates: int = 2, pro_explore_top_k: int = 1, pro_exploit_n_candidates: int = 4, pro_exploit_top_k: int = 2, pro_explore_max_new_tokens: int = 64, pro_exploit_max_new_tokens: int = 128, pro_enable_eval_cache: bool = False, pro_eval_batch_size: int = 2, pro_enable_retrieval_cache: bool = True, pro_enable_fast_judge: bool = True, pro_fast_judge_min_len: int = 24, pro_enable_feedback_scheduler: bool = True, pro_feedback_budget_ms: float = 5000.0, pro_feedback_min_delta: float = 0.02, pro_feedback_cooldown_turns: int = 1, mfps_enabled: bool = False, mfps_profile: str = "balanced", mfps_alpha0: float = 0.5, mfps_alpha1: float = 0.5, mfps_short_max_new_tokens: int = 32, mfps_min_candidates_f2: int = 1, mfps_uncertainty_band: float = 0.1, mfps_eval_budget_ms: float = 0.0, mfps_w_f0: float = 0.35, mfps_w_f1: float = 0.65, mfps_uncertainty_penalty: float = 0.2, pro_hybrid_mfps_four_tier: bool = True, pro_four_tier_eval: bool = True, pro_verifier_top_n: int = 1, pro_dynamic_pattern_select: bool = False, pro_pattern_exploit_n: int = 3, pro_pattern_explore_n: int = 2, pro_pattern_rank_w_rate: float = 0.3, pro_pattern_rank_w_avg: float = 0.3, pro_pattern_rank_w_req: float = 0.4, pro_pattern_explore_seed: Optional[int] = None, pro_goal_similarity_floor: float = 0.15, pro_telemetry_jsonl: Optional[str] = None, pro_verbose_pipeline_logs: bool = False, pro_eval_cache_max_entries: int = 256):
+    def __init__(self, turbo_framework: dict, data, target, epochs=150, warm_up_iterations=1, lifelong_iterations=4, log_every=10, pro_n_candidates: int = 4, pro_top_k: int = 2, pro_score_threshold: float = 0.5, target_max_new_tokens: int = 150, target_model_key: str = "", nll_min = 0.0, nll_max = 10.0, per_request_epochs: bool = False, pro_early_stop_patience: int = 5, pro_early_stop_min_delta: float = 0.01, pro_refusal_streak_stop: int = 4, pro_feedback_every: int = 2, pro_feedback_min_quality: float = 0.35, pro_phase_split: float = 0.7, pro_explore_n_candidates: int = 2, pro_explore_top_k: int = 1, pro_exploit_n_candidates: int = 4, pro_exploit_top_k: int = 2, pro_explore_max_new_tokens: int = 64, pro_exploit_max_new_tokens: int = 128, pro_enable_eval_cache: bool = False, pro_eval_batch_size: int = 2, pro_enable_retrieval_cache: bool = True, pro_enable_fast_judge: bool = True, pro_fast_judge_min_len: int = 24, pro_enable_feedback_scheduler: bool = True, pro_feedback_budget_ms: float = 5000.0, pro_feedback_min_delta: float = 0.02, pro_feedback_cooldown_turns: int = 1, pro_enable_feedback_refine: bool = True, mfps_enabled: bool = False, mfps_profile: str = "balanced", mfps_alpha0: float = 0.5, mfps_alpha1: float = 0.5, mfps_short_max_new_tokens: int = 32, mfps_min_candidates_f2: int = 1, mfps_uncertainty_band: float = 0.1, mfps_eval_budget_ms: float = 0.0, mfps_w_f0: float = 0.35, mfps_w_f1: float = 0.65, mfps_uncertainty_penalty: float = 0.2, pro_hybrid_mfps_four_tier: bool = True, pro_four_tier_eval: bool = True, pro_verifier_top_n: int = 1, pro_dynamic_pattern_select: bool = False, pro_pattern_exploit_n: int = 3, pro_pattern_explore_n: int = 2, pro_pattern_rank_w_rate: float = 0.3, pro_pattern_rank_w_avg: float = 0.3, pro_pattern_rank_w_req: float = 0.4, pro_pattern_explore_seed: Optional[int] = None, pro_goal_similarity_floor: float = 0.15, pro_telemetry_jsonl: Optional[str] = None, pro_verbose_pipeline_logs: bool = False, pro_eval_cache_max_entries: int = 256):
         self.attacker = turbo_framework['attacker']
         self.scorer = turbo_framework['scorer']
         self.summarizer = turbo_framework['summarizer']
@@ -87,6 +87,12 @@ class AutoDANTurboPro():
         self._retrieval_embed_cache = {} if self.pro_enable_retrieval_cache else None
         self.pro_enable_fast_judge = bool(pro_enable_fast_judge)
         self.pro_enable_feedback_scheduler = bool(pro_enable_feedback_scheduler)
+        self.pro_enable_feedback_refine = bool(pro_enable_feedback_refine)
+        if not self.pro_enable_feedback_refine:
+            self.logger.info(
+                "PRO: Feedback & Refine disabled (no diagnose/refine LLM calls; "
+                "improved_variable hints cleared; prior_attempt still active)."
+            )
         self._request_feedback_spent_ms = 0.0
         self._prev_best_failed_score = None
         # MFPS v2 skeleton knobs
@@ -178,10 +184,18 @@ class AutoDANTurboPro():
         return text
 
     def set_epoch_refine_hint(self, hint: str) -> None:
+        if not self.pro_enable_feedback_refine:
+            self.epoch_refine_hint = ""
+            return
         h = (hint or "").strip()
         if len(h) > 6000:
             h = h[:5980] + "\n[hint_truncated]"
         self.epoch_refine_hint = h
+
+    def _goat_improved_variable(self) -> str:
+        if not self.pro_enable_feedback_refine:
+            return ""
+        return (getattr(self, "epoch_refine_hint", None) or "").strip()
 
     def _log_pro(self, event: str, **fields):
         """Backward-compatible PRO logger."""
@@ -422,16 +436,17 @@ class AutoDANTurboPro():
         return result, elapsed_ms
 
     def _update_request_memory(self, request_memory: Dict[str, Any], result: Dict[str, Any]) -> None:
-        rv = str(result.get("last_refined_variable", "") or "").strip()
-        if rv:
-            request_memory.setdefault("global_refine_hints", []).append(rv)
-        fb = result.get("last_feedback")
-        if isinstance(fb, dict):
-            pattern = str(fb.get("Pattern_observed", "")).strip()
-            if pattern:
-                fp = request_memory.setdefault("failure_patterns", {})
-                fp[pattern] = int(fp.get(pattern, 0)) + 1
-        request_memory["global_refine_hints"] = request_memory.get("global_refine_hints", [])[-200:]
+        if self.pro_enable_feedback_refine:
+            rv = str(result.get("last_refined_variable", "") or "").strip()
+            if rv:
+                request_memory.setdefault("global_refine_hints", []).append(rv)
+            fb = result.get("last_feedback")
+            if isinstance(fb, dict):
+                pattern = str(fb.get("Pattern_observed", "")).strip()
+                if pattern:
+                    fp = request_memory.setdefault("failure_patterns", {})
+                    fp[pattern] = int(fp.get(pattern, 0)) + 1
+            request_memory["global_refine_hints"] = request_memory.get("global_refine_hints", [])[-200:]
         prompt = str(result.get("best_prompt", "") or "").strip()
         response = str(result.get("best_response", "") or "").strip()
         if prompt and response:
@@ -459,7 +474,9 @@ class AutoDANTurboPro():
         repeats_completed = 0
         self._request_feedback_spent_ms = 0.0
         self._prev_best_failed_score = None
-        _global_cross_epoch_hint = (getattr(self, "epoch_refine_hint", None) or "").strip()
+        _global_cross_epoch_hint = (
+            self._goat_improved_variable() if self.pro_enable_feedback_refine else ""
+        )
 
         for rep in range(repeats):
             phase = "explore" if rep < phase_boundary else "exploit"
@@ -480,7 +497,7 @@ class AutoDANTurboPro():
                 self.pro_top_k = self.pro_exploit_top_k
                 self.target_max_new_tokens = self.pro_exploit_max_new_tokens
             try:
-                if self.per_request_epochs:
+                if self.per_request_epochs and self.pro_enable_feedback_refine:
                     hint = self.build_epoch_refine_hint_from_memory(request_memory)
                     if rep == 0 and _global_cross_epoch_hint:
                         hint = (
@@ -489,6 +506,8 @@ class AutoDANTurboPro():
                             else _global_cross_epoch_hint
                         )
                     self.set_epoch_refine_hint(hint)
+                elif not self.pro_enable_feedback_refine:
+                    self.set_epoch_refine_hint("")
                 last_attempt = request_memory.get("last_attempt") or {}
                 if isinstance(last_attempt, dict):
                     self.prior_attempt_prompt = str(last_attempt.get("prompt", "") or "")
@@ -500,7 +519,8 @@ class AutoDANTurboPro():
                 result = self.attack_single_turn(request)
                 feedback_ms_repeat = 0.0
                 if (
-                    isinstance(result, dict)
+                    self.pro_enable_feedback_refine
+                    and isinstance(result, dict)
                     and not bool(result.get("success", False))
                     and result.get("failed_branches")
                 ):
@@ -1259,6 +1279,8 @@ class AutoDANTurboPro():
         improved_variable: str,
     ) -> Tuple[Optional[Dict[str, Any]], str, float]:
         """Feedback + refine after a failed single-turn attempt; feeds the next repeat."""
+        if not self.pro_enable_feedback_refine:
+            return None, improved_variable, 0.0
         if not failed_branches:
             return None, improved_variable, 0.0
         best_failed_score = self._branch_score_loss(best_failed)
@@ -1605,7 +1627,7 @@ class AutoDANTurboPro():
         """One GOAT generation + eval per call; feedback runs between repeats in _run_request_with_repetitions."""
         self._maybe_log_telemetry_config()
         history: List[Dict[str, Any]] = []
-        improved_variable = (getattr(self, "epoch_refine_hint", None) or "").strip()
+        improved_variable = self._goat_improved_variable()
         last_feedback = None
         last_refined_variable = improved_variable
         best_candidate = None

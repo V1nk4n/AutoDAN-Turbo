@@ -1,6 +1,7 @@
 from framework import Attacker, Scorer, Summarizer, Retrieval, Target, Feedback, Refiner, PatternManager
 from framework.harmbench_classifier import HarmBenchClassifier
 from llm import HuggingFaceModel, OpenAIEmbeddingModel
+from llm.target_resolve import resolve_target_model
 import argparse
 import json
 import logging
@@ -17,6 +18,8 @@ def config():
         description="Evaluate trained PRO pipeline (aligned with main.py training flags).",
     )
     parser.add_argument("--model", type=str, default="llama3")
+    parser.add_argument("--target_repo", type=str, default=None)
+    parser.add_argument("--target_config", type=str, default=None)
     parser.add_argument("--chat_config", type=str, default="./llm/chat_templates")
 
     parser.add_argument("--data", type=str, default="./data/harmful_behavior_requests.json")
@@ -67,6 +70,7 @@ def config():
     parser.add_argument("--pro_feedback_budget_ms", type=float, default=5000.0)
     parser.add_argument("--pro_feedback_min_delta", type=float, default=0.02)
     parser.add_argument("--pro_feedback_cooldown_turns", type=int, default=1)
+    parser.add_argument("--pro_disable_feedback_refine", action="store_true")
 
     parser.add_argument("--mfps_enabled", action="store_true")
     parser.add_argument("--mfps_profile", type=str, default="balanced", choices=["conservative", "balanced", "aggressive"])
@@ -226,6 +230,7 @@ def build_pipeline_kwargs(args, repo_name: str) -> dict:
         pro_feedback_budget_ms=args.pro_feedback_budget_ms,
         pro_feedback_min_delta=args.pro_feedback_min_delta,
         pro_feedback_cooldown_turns=args.pro_feedback_cooldown_turns,
+        pro_enable_feedback_refine=not args.pro_disable_feedback_refine,
         mfps_enabled=args.mfps_enabled,
         mfps_profile=args.mfps_profile,
         mfps_alpha0=args.mfps_alpha0,
@@ -265,12 +270,13 @@ if __name__ == "__main__":
     config_dir = args.chat_config
     hf_token = args.hf_token
 
-    if args.model == "llama3":
-        repo_name = "Qwen/Qwen2.5-1.5B-Instruct"
-        config_name = "Qwen2.5-1.5B-Instruct"
-    else:
-        repo_name = "google/gemma-1.1-7b-it"
-        config_name = "gemma-it"
+    repo_name, config_name = resolve_target_model(
+        model_preset=args.model,
+        target_repo=args.target_repo,
+        target_config=args.target_config,
+        config_dir=config_dir,
+    )
+    logger.info("Target model: %s (generation_config=%s)", repo_name, config_name)
 
     model = HuggingFaceModel(
         repo_name,

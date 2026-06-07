@@ -46,6 +46,7 @@ THRESHOLD_CONFIG_KEYS = (
     "pro_staged_probe_keep_ratio",
     "pro_staged_uncertainty_band",
     "pro_feedback_every",
+    "pro_enable_feedback_refine",
     "pro_feedback_cooldown_repeats",
     "pro_per_candidate_strategy_bundles",
     "pro_rotate_explore_across_candidates",

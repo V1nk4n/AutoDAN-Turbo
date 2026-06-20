@@ -762,6 +762,24 @@ class PatternManager:
             self.save()
         return sid
 
+    def record_trials(self, strategy_ids: List[str]) -> bool:
+        """Increment trial_count for each strategy selected in an attack attempt."""
+        if self.frozen:
+            return False
+        changed = False
+        for sid in strategy_ids:
+            sid = str(sid).strip()
+            if not sid or sid not in self.strategies:
+                continue
+            metrics = self.strategies[sid].setdefault("metrics", {})
+            metrics["trial_count"] = int(metrics.get("trial_count", 0)) + 1
+            changed = True
+        if not changed:
+            return False
+        if self.test_mode:
+            return True
+        return self.save()
+
     def save_success(
         self,
         strategy_id: str,
@@ -781,7 +799,6 @@ class PatternManager:
         freq = int(metrics.get("freq", 0)) + 1
         old_avg = float(metrics.get("avg_score", 0.0))
         metrics["freq"] = freq
-        metrics["trial_count"] = int(metrics.get("trial_count", 0)) + 1
         metrics["avg_score"] = old_avg + (float(s_quality) - old_avg) / max(freq, 1)
         successful_models = metrics.setdefault("successful_models", {})
         if target_model:

@@ -31,6 +31,10 @@ def config():
                         help="HuggingFace repo id for target model (one model per run; overrides --model)")
     config.add_argument("--target_config", type=str, default=None,
                         help="Generation config under chat_config/generation_configs/ (default: infer from repo tail)")
+    config.add_argument("--agent_repo", type=str, default=None,
+                        help="HF repo for baseline attacker/summarizer/scorer (default: same as target for attack/summarize; scorer uses Qwen2.5-1.5B-Instruct)")
+    config.add_argument("--agent_config", type=str, default=None,
+                        help="Generation config for --agent_repo (default: infer from repo tail)")
     config.add_argument("--chat_config", type=str, default="./llm/chat_templates")
     config.add_argument("--data", type=str, default="./data/harmful_behavior_requests.json")
     config.add_argument("--epochs", type=int, default=150)
@@ -272,7 +276,25 @@ def build_per_run_dir(per_run_root: str, *, pro_enabled: bool, repo_name: str, d
     return path
 
 
-def append_run_summary(log_path: str, *, elapsed_s: float, repo_name: str, pipeline: str) -> None:
+_SECRET_ARG_KEYS = frozenset({
+    "hf_token", "azure_api_key", "openai_api_key", "deepseek_api_key",
+})
+
+
+def build_run_config_snapshot(args: argparse.Namespace, run_meta: dict) -> dict:
+    snapshot = {k: v for k, v in vars(args).items() if k not in _SECRET_ARG_KEYS}
+    snapshot.update(run_meta)
+    return snapshot
+
+
+def append_run_summary(
+    log_path: str,
+    *,
+    elapsed_s: float,
+    repo_name: str,
+    pipeline: str,
+    run_config: dict | None = None,
+) -> None:
     hours, rem = divmod(elapsed_s, 3600)
     minutes, seconds = divmod(rem, 60)
     with open(log_path, "a", encoding="utf-8") as f:
@@ -283,6 +305,10 @@ def append_run_summary(log_path: str, *, elapsed_s: float, repo_name: str, pipel
             f"total_runtime_seconds: {elapsed_s:.2f}\n"
             f"total_runtime: {int(hours)}h {int(minutes)}m {seconds:.1f}s\n"
         )
+        if run_config is not None:
+            f.write("\n=== RUN CONFIG ===\n")
+            f.write(json.dumps(run_config, indent=2, ensure_ascii=False, default=str))
+            f.write("\n")
 
 
 def save_pattern_library_pkl(pattern_json_path: str, pkl_path: str) -> None:
@@ -326,6 +352,12 @@ if __name__ == '__main__':
     pattern_manager = None
     pattern_library_pkl = os.path.join(per_run_dir, "pattern_library.pkl")
     _run_finalized = [False]
+    run_meta = {
+        "target_repo": repo_name,
+        "target_config": config_name,
+        "per_run_dir": per_run_dir,
+        "pipeline": "pro" if args.pro_enabled else "baseline",
+    }
 
     logger = logging.getLogger("CustomLogger")
     logger.setLevel(logging.DEBUG)
@@ -369,6 +401,14 @@ if __name__ == '__main__':
             elapsed_s=elapsed,
             repo_name=repo_name,
             pipeline=pipeline,
+            run_config=build_run_config_snapshot(args, run_meta),
+        )
+        append_run_summary(
+            log_file,
+            elapsed_s=elapsed,
+            repo_name=repo_name,
+            pipeline=pipeline,
+            run_config=build_run_config_snapshot(args, run_meta),
         )
         logger.info("Run finished in %.2fs (pipeline=%s, target=%s)", elapsed, pipeline, repo_name)
 
@@ -410,32 +450,68 @@ if __name__ == '__main__':
         feedback = Feedback(model)
         refiner = Refiner(model)
         target = Target(model)
+        run_meta["agent_repo"] = repo_name
+        run_meta["agent_config"] = config_name
+        run_meta["x_model_repo"] = x_model_repo_name
+        run_meta["x_model_config"] = x_model_config_name
     else:
-        model = HuggingFaceModelBaseline(
-            repo_name,
-            config_dir,
-            config_name,
-            hf_token,
-            use_quantization=True,
-            quantization_type="4bit",
-        )
-        attacker = BaselineAttacker(model)
-        summarizer = BaselineSummarizer(model)
-        scorer_repo = "Qwen/Qwen2.5-1.5B-Instruct"
-        scorer_config = "Qwen2.5-1.5B-Instruct"
-        scorer_model = HuggingFaceModelBaseline(
-            scorer_repo,
-            config_dir,
-            scorer_config,
-            hf_token,
-            use_quantization=True,
-            quantization_type="4bit",
-        )
         import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        scorer = BaselineScorer(scorer_model)
-        target = BaselineTarget(model)
+
+        def _load_baseline_hf(repo: str, cfg: str) -> HuggingFaceModelBaseline:
+            return HuggingFaceModelBaseline(
+                repo,
+                config_dir,
+                cfg,
+                hf_token,
+                use_quantization=True,
+                quantization_type="4bit",
+            )
+
+        target_model = _load_baseline_hf(repo_name, config_name)
+
+        if args.agent_repo:
+            agent_repo, agent_config_name = resolve_target_model(
+                model_preset=args.model,
+                target_repo=args.agent_repo,
+                target_config=args.agent_config,
+                config_dir=config_dir,
+            )
+            if agent_repo == repo_name and agent_config_name == config_name:
+                agent_model = target_model
+            else:
+                agent_model = _load_baseline_hf(agent_repo, agent_config_name)
+            attacker = BaselineAttacker(agent_model)
+            summarizer = BaselineSummarizer(agent_model)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            scorer = BaselineScorer(agent_model)
+            logger.info(
+                "Baseline agent stack (attacker/summarizer/scorer): %s (generation_config=%s)",
+                agent_repo,
+                agent_config_name,
+            )
+            run_meta["agent_repo"] = agent_repo
+            run_meta["agent_config"] = agent_config_name
+        else:
+            attacker = BaselineAttacker(target_model)
+            summarizer = BaselineSummarizer(target_model)
+            scorer_repo = "Qwen/Qwen2.5-1.5B-Instruct"
+            scorer_config = "Qwen2.5-1.5B-Instruct"
+            scorer_model = _load_baseline_hf(scorer_repo, scorer_config)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            scorer = BaselineScorer(scorer_model)
+            logger.info(
+                "Baseline scorer (legacy split): %s (generation_config=%s)",
+                scorer_repo,
+                scorer_config,
+            )
+            run_meta["agent_repo"] = repo_name
+            run_meta["agent_config"] = config_name
+            run_meta["scorer_repo"] = scorer_repo
+            run_meta["scorer_config"] = scorer_config
+
+        target = BaselineTarget(target_model)
         if args.tts_enabled:
             logger.warning("TTS is not supported in c7becfb baseline; --tts_enabled will be ignored.")
         logger.info("Using isolated baseline stack (framework_baseline + pipeline_baseline + c7becfb HF loader)")
@@ -460,6 +536,12 @@ if __name__ == '__main__':
                                                     openai_api_key=args.openai_api_key,
                                                     embedding_model=args.embedding_model,
                                                     logger=logger)
+    if args.use_local_embedding:
+        run_meta["embedding_model"] = args.local_embedding_model
+    elif args.azure:
+        run_meta["embedding_model"] = f"azure:{args.azure_deployment_name}"
+    else:
+        run_meta["embedding_model"] = args.embedding_model
     retrieval = Retrieval(text_embedding_model, logger)
 
     if args.debug:

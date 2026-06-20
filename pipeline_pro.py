@@ -1601,6 +1601,41 @@ class AutoDANTurboPro():
             "examples": data.get("examples", []),
         }
 
+    def _record_pattern_trials(
+        self,
+        top_strategies: list,
+        credited_strategy_id: Optional[str],
+        turn: int,
+        turn_time_by_stage: Dict[str, float],
+        request_time_by_stage: Dict[str, float],
+    ) -> None:
+        if not self.pattern_manager:
+            return
+        trial_ids: List[str] = []
+        seen = set()
+        for s in top_strategies:
+            if not isinstance(s, dict):
+                continue
+            sid = s.get("strategy_id")
+            if sid and sid not in seen:
+                trial_ids.append(str(sid))
+                seen.add(str(sid))
+        if credited_strategy_id and credited_strategy_id not in seen:
+            trial_ids.append(str(credited_strategy_id))
+        if not trial_ids:
+            return
+        (saved, elapsed_ms) = self._time_call(self.pattern_manager.record_trials, trial_ids)
+        turn_time_by_stage["pattern_record_trials"] = elapsed_ms
+        request_time_by_stage["pattern_record_trials"] = request_time_by_stage.get(
+            "pattern_record_trials", 0.0
+        ) + elapsed_ms
+        self._log_stage(
+            turn=turn,
+            stage="pattern_record_trials",
+            duration_ms=elapsed_ms,
+            output_data={"strategy_ids": trial_ids, "saved": bool(saved)},
+        )
+
     def _summarize_new_strategy(self, request, prompt_used):
         strategy_library = {}
         if self.pattern_manager:
@@ -1741,6 +1776,7 @@ class AutoDANTurboPro():
                 "count": len(top_strategies),
             },
         )
+        credited_strategy_id = None
         (goat_output, elapsed_ms) = self._time_call(
             self.attacker.generate_goat_batch,
             request=request,
@@ -1958,6 +1994,7 @@ class AutoDANTurboPro():
                             duration_ms=elapsed_save_ms,
                             output_data={"strategy_id": matched_id, "saved": bool(save_ok)},
                         )
+                        credited_strategy_id = matched_id
                     else:
                         try:
                             (new_strategy_json, elapsed_summarize_ms) = self._time_call(
@@ -1995,6 +2032,7 @@ class AutoDANTurboPro():
                                 duration_ms=elapsed_save_ms,
                                 output_data={"strategy_id": new_id, "saved": bool(save_ok)},
                             )
+                            credited_strategy_id = new_id
                         else:
                             self.logger.info("Slow Path: Summarizer output invalid, fallback to selected strategy.")
                             if strategy_id:
@@ -2017,12 +2055,21 @@ class AutoDANTurboPro():
                                     duration_ms=elapsed_save_ms,
                                     output_data={"strategy_id": strategy_id, "saved": bool(save_ok)},
                                 )
+                                credited_strategy_id = strategy_id
                     self._log_stage(
                         turn=turn,
                         stage="pattern_match_or_summarize",
                         duration_ms=turn_time_by_stage.get("pattern_match_or_summarize", 0.0),
                         output_data={"matched_id": matched_id, "strategy_id_fallback": strategy_id},
                     )
+
+        self._record_pattern_trials(
+            top_strategies,
+            credited_strategy_id,
+            turn,
+            turn_time_by_stage,
+            request_time_by_stage,
+        )
 
         turn_elapsed_ms = (time.perf_counter() - turn_started) * 1000.0
         for step_name, step_ms in turn_time_by_stage.items():

@@ -108,6 +108,7 @@ def config():
     config.add_argument("--pro_feedback_min_delta", type=float, default=0.02, help="Minimum score delta to trigger adaptive feedback")
     config.add_argument("--pro_feedback_cooldown_turns", type=int, default=1, help="Cooldown turns between adaptive feedback runs")
     config.add_argument("--pro_disable_feedback_refine", action="store_true", help="Ablation: disable Feedback diagnose + Refine LLM calls (default: enabled, same as 9a14912)")
+    config.add_argument("--pro_disable_dual_scorer", action="store_true", help="Use single scorer model for scoring+wrapper (do not load Qwen3-0.6B x_model)")
     config.add_argument("--mfps_enabled", action='store_true', help="Enable MFPS v2 multi-fidelity candidate evaluation")
     config.add_argument("--mfps_profile", type=str, default="balanced", choices=["conservative", "balanced", "aggressive"], help="F1 threshold profile: conservative/balanced/aggressive")
     config.add_argument("--mfps_alpha0", type=float, default=0.5, help="Keep ratio after MFPS stage F0")
@@ -443,17 +444,24 @@ if __name__ == '__main__':
         )
         attacker = Attacker(model)
         summarizer = Summarizer(model)
-        x_model_repo_name = "Qwen/Qwen3-0.6B"
-        x_model_config_name = "Qwen3-0.6B"
-        x_model = HuggingFaceModel(x_model_repo_name, config_dir, x_model_config_name, hf_token)
-        scorer = Scorer(model, x_model)
+        if args.pro_disable_dual_scorer:
+            scorer = Scorer(model)
+            logger.info("PRO scorer: single model (dual x_model disabled)")
+            run_meta["x_model_repo"] = None
+            run_meta["x_model_config"] = None
+        else:
+            x_model_repo_name = "Qwen/Qwen3-0.6B"
+            x_model_config_name = "Qwen3-0.6B"
+            x_model = HuggingFaceModel(x_model_repo_name, config_dir, x_model_config_name, hf_token)
+            scorer = Scorer(model, x_model)
+            logger.info("PRO scorer: dual (main=%s, wrapper=%s)", repo_name, x_model_repo_name)
+            run_meta["x_model_repo"] = x_model_repo_name
+            run_meta["x_model_config"] = x_model_config_name
         feedback = Feedback(model)
         refiner = Refiner(model)
         target = Target(model)
         run_meta["agent_repo"] = repo_name
         run_meta["agent_config"] = config_name
-        run_meta["x_model_repo"] = x_model_repo_name
-        run_meta["x_model_config"] = x_model_config_name
     else:
         import torch
 

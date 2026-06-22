@@ -71,6 +71,7 @@ def config():
     parser.add_argument("--pro_feedback_min_delta", type=float, default=0.02)
     parser.add_argument("--pro_feedback_cooldown_turns", type=int, default=1)
     parser.add_argument("--pro_disable_feedback_refine", action="store_true")
+    parser.add_argument("--pro_disable_dual_scorer", action="store_true", help="Do not load Qwen3-0.6B wrapper model")
 
     parser.add_argument("--mfps_enabled", action="store_true")
     parser.add_argument("--mfps_profile", type=str, default="balanced", choices=["conservative", "balanced", "aggressive"])
@@ -289,10 +290,15 @@ if __name__ == "__main__":
     attacker = Attacker(model)
     summarizer = Summarizer(model)
 
-    x_model_repo = "Qwen/Qwen3-0.6B"
-    x_model_config = "Qwen3-0.6B"
-    x_model = HuggingFaceModel(x_model_repo, config_dir, x_model_config, hf_token)
-    scorer = Scorer(model, x_model)
+    if args.pro_disable_dual_scorer:
+        scorer = Scorer(model)
+        logger.info("PRO scorer: single model (dual x_model disabled)")
+    else:
+        x_model_repo = "Qwen/Qwen3-0.6B"
+        x_model_config = "Qwen3-0.6B"
+        x_model = HuggingFaceModel(x_model_repo, config_dir, x_model_config, hf_token)
+        scorer = Scorer(model, x_model)
+        logger.info("PRO scorer: dual (main=%s, wrapper=%s)", repo_name, x_model_repo)
 
     if args.use_local_embedding:
         from llm import LocalEmbeddingModel

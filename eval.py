@@ -1,6 +1,7 @@
 from framework import Attacker, Scorer, Summarizer, Retrieval, Target
 from framework.harmbench_classifier import HarmBenchClassifier
 from llm import HuggingFaceModel, OpenAIEmbeddingModel
+from llm.target_resolve import resolve_target_model
 import argparse
 import json
 import logging
@@ -14,7 +15,12 @@ from pipeline import AutoDANTurbo
 
 def config():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="llama3")
+    parser.add_argument("--model", type=str, default="llama3",
+                        help="Preset khi --target_repo bỏ trống: llama3=Llama-3.2-1B-Instruct, else=gemma-1.1-7b-it")
+    parser.add_argument("--target_repo", type=str, default=None,
+                        help="HuggingFace repo id cho target model (override --model)")
+    parser.add_argument("--target_config", type=str, default=None,
+                        help="Generation config name trong chat_config/generation_configs/ (tự infer từ repo tail nếu bỏ trống)")
     parser.add_argument("--chat_config", type=str, default="./llm/chat_templates")
 
     # Dataset for evaluation (must be JSON with {"warm_up": [...], "lifelong": [...]}, or list[str])
@@ -163,12 +169,12 @@ if __name__ == "__main__":
     config_dir = args.chat_config
     hf_token = args.hf_token
 
-    if args.model == "llama3":
-        repo_name = "meta-llama/Llama-3.2-1B-Instruct"
-        config_name = "llama-3-instruct"
-    else:
-        repo_name = "google/gemma-1.1-7b-it"
-        config_name = "gemma-it"
+    repo_name, config_name = resolve_target_model(
+        model_preset=args.model,
+        target_repo=args.target_repo,
+        target_config=args.target_config,
+        config_dir=config_dir,
+    )
 
     model = HuggingFaceModel(repo_name, config_dir, config_name, hf_token)
     attacker = Attacker(model)

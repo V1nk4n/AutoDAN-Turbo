@@ -180,13 +180,14 @@ if __name__ == "__main__":
     attacker = Attacker(model)
     summarizer = Summarizer(model)
 
-    # Scorer model (default same as test.py)
-    # scorer_repo_name = "google/gemma-1.1-7b-it"
-    # scorer_config_name = "gemma-it"
-    scorer_repo_name = "meta-llama/Llama-3.2-1B-Instruct"
-    scorer_config_name = "llama-3-instruct"
-    scorer_model = HuggingFaceModel(scorer_repo_name, config_dir, scorer_config_name, hf_token)
-    scorer = Scorer(scorer_model)
+    # Scorer model: skip loading when HarmBench classifier is used (saves VRAM)
+    if args.use_harmbench_classifier:
+        scorer = Scorer(model)
+    else:
+        scorer_repo_name = "meta-llama/Llama-3.2-1B-Instruct"
+        scorer_config_name = "llama-3-instruct"
+        scorer_model = HuggingFaceModel(scorer_repo_name, config_dir, scorer_config_name, hf_token)
+        scorer = Scorer(scorer_model)
 
     # Embeddings
     if args.use_local_embedding:

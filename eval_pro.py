@@ -20,6 +20,10 @@ def config():
     parser.add_argument("--model", type=str, default="llama3")
     parser.add_argument("--target_repo", type=str, default=None)
     parser.add_argument("--target_config", type=str, default=None)
+    parser.add_argument("--agent_repo", type=str, default=None,
+                        help="HuggingFace repo id for attacker/summarizer/scorer/feedback/refiner (default: same as target)")
+    parser.add_argument("--agent_config", type=str, default=None,
+                        help="Generation config for agent model (inferred from repo tail if omitted)")
     parser.add_argument("--chat_config", type=str, default="./llm/chat_templates")
 
     parser.add_argument("--data", type=str, default="./data/harmful_behavior_requests.json")
@@ -279,7 +283,7 @@ if __name__ == "__main__":
     )
     logger.info("Target model: %s (generation_config=%s)", repo_name, config_name)
 
-    model = HuggingFaceModel(
+    target_model = HuggingFaceModel(
         repo_name,
         config_dir,
         config_name,
@@ -287,18 +291,43 @@ if __name__ == "__main__":
         use_quantization=True,
         quantization_type="4bit",
     )
-    attacker = Attacker(model)
-    summarizer = Summarizer(model)
+
+    # Agent model (attacker / summarizer / scorer / feedback / refiner)
+    if args.agent_repo:
+        agent_repo_name, agent_config_name = resolve_target_model(
+            model_preset=args.model,
+            target_repo=args.agent_repo,
+            target_config=args.agent_config,
+            config_dir=config_dir,
+        )
+        if agent_repo_name == repo_name and agent_config_name == config_name:
+            agent_model = target_model
+        else:
+            agent_model = HuggingFaceModel(
+                agent_repo_name,
+                config_dir,
+                agent_config_name,
+                hf_token,
+                use_quantization=True,
+                quantization_type="4bit",
+            )
+        logger.info("Agent model: %s (generation_config=%s)", agent_repo_name, agent_config_name)
+    else:
+        agent_model = target_model
+        logger.info("Agent model: same as target (%s)", repo_name)
+
+    attacker = Attacker(agent_model)
+    summarizer = Summarizer(agent_model)
 
     if args.pro_disable_dual_scorer:
-        scorer = Scorer(model)
+        scorer = Scorer(agent_model)
         logger.info("PRO scorer: single model (dual x_model disabled)")
     else:
         x_model_repo = "Qwen/Qwen3-0.6B"
         x_model_config = "Qwen3-0.6B"
         x_model = HuggingFaceModel(x_model_repo, config_dir, x_model_config, hf_token)
-        scorer = Scorer(model, x_model)
-        logger.info("PRO scorer: dual (main=%s, wrapper=%s)", repo_name, x_model_repo)
+        scorer = Scorer(agent_model, x_model)
+        logger.info("PRO scorer: dual (main=%s, wrapper=%s)", agent_repo_name if args.agent_repo else repo_name, x_model_repo)
 
     if args.use_local_embedding:
         from llm import LocalEmbeddingModel
@@ -326,9 +355,9 @@ if __name__ == "__main__":
         )
 
     retrieval = Retrieval(text_embedding_model, logger)
-    target = Target(model)
-    feedback = Feedback(model)
-    refiner = Refiner(model)
+    target = Target(target_model)
+    feedback = Feedback(agent_model)
+    refiner = Refiner(agent_model)
     pattern_manager = PatternManager(
         filepath=args.pattern_filepath,
         force_seed=args.pattern_force_seed,

@@ -21,6 +21,10 @@ def config():
                         help="HuggingFace repo id cho target model (override --model)")
     parser.add_argument("--target_config", type=str, default=None,
                         help="Generation config name trong chat_config/generation_configs/ (tự infer từ repo tail nếu bỏ trống)")
+    parser.add_argument("--agent_repo", type=str, default=None,
+                        help="HuggingFace repo id cho attacker/summarizer/scorer (mặc định: dùng cùng model với target)")
+    parser.add_argument("--agent_config", type=str, default=None,
+                        help="Generation config name cho agent (tự infer nếu bỏ trống)")
     parser.add_argument("--chat_config", type=str, default="./llm/chat_templates")
 
     # Dataset for evaluation (must be JSON with {"warm_up": [...], "lifelong": [...]}, or list[str])
@@ -176,18 +180,27 @@ if __name__ == "__main__":
         config_dir=config_dir,
     )
 
-    model = HuggingFaceModel(repo_name, config_dir, config_name, hf_token)
-    attacker = Attacker(model)
-    summarizer = Summarizer(model)
+    target_model = HuggingFaceModel(repo_name, config_dir, config_name, hf_token)
 
-    # Scorer model: skip loading when HarmBench classifier is used (saves VRAM)
-    if args.use_harmbench_classifier:
-        scorer = Scorer(model)
+    # Agent model (attacker / summarizer / scorer) — dùng riêng nếu có --agent_repo, ngược lại dùng lại target
+    if args.agent_repo:
+        agent_repo_name, agent_config_name = resolve_target_model(
+            model_preset=args.model,
+            target_repo=args.agent_repo,
+            target_config=args.agent_config,
+            config_dir=config_dir,
+        )
+        if agent_repo_name == repo_name and agent_config_name == config_name:
+            agent_model = target_model
+        else:
+            agent_model = HuggingFaceModel(agent_repo_name, config_dir, agent_config_name, hf_token)
     else:
-        scorer_repo_name = "meta-llama/Llama-3.2-1B-Instruct"
-        scorer_config_name = "llama-3-instruct"
-        scorer_model = HuggingFaceModel(scorer_repo_name, config_dir, scorer_config_name, hf_token)
-        scorer = Scorer(scorer_model)
+        agent_model = target_model
+
+    attacker = Attacker(agent_model)
+    summarizer = Summarizer(agent_model)
+
+    scorer = Scorer(agent_model)
 
     # Embeddings
     if args.use_local_embedding:
@@ -216,7 +229,7 @@ if __name__ == "__main__":
         )
 
     retrieval = Retrieval(text_embedding_model, logger)
-    target = Target(model)
+    target = Target(target_model)
 
     attack_kit = {
         "attacker": attacker,

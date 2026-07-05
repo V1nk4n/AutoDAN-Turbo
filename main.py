@@ -32,7 +32,9 @@ def config():
     config.add_argument("--target_config", type=str, default=None,
                         help="Generation config under chat_config/generation_configs/ (default: infer from repo tail)")
     config.add_argument("--agent_repo", type=str, default=None,
-                        help="HF repo for baseline attacker/summarizer/scorer (default: same as target for attack/summarize; scorer uses Qwen2.5-1.5B-Instruct)")
+                        help="HF repo for attacker/summarizer/scorer/feedback/refiner "
+                             "(PRO: default=same as target; baseline: default=same as target for attack/summarize, "
+                             "scorer falls back to Qwen2.5-1.5B-Instruct when omitted)")
     config.add_argument("--agent_config", type=str, default=None,
                         help="Generation config for --agent_repo (default: infer from repo tail)")
     config.add_argument("--chat_config", type=str, default="./llm/chat_templates")
@@ -434,7 +436,7 @@ if __name__ == '__main__':
         # model = VLLMModel(repo_name, config_dir, config_name, hf_token)
         pass
     elif args.pro_enabled:
-        model = HuggingFaceModel(
+        target_model = HuggingFaceModel(
             repo_name,
             config_dir,
             config_name,
@@ -442,10 +444,39 @@ if __name__ == '__main__':
             use_quantization=True,
             quantization_type="4bit",
         )
-        attacker = Attacker(model)
-        summarizer = Summarizer(model)
+        # Agent stack (attacker / summarizer / scorer / feedback / refiner), same as eval_pro.py
+        if args.agent_repo:
+            agent_repo_name, agent_config_name = resolve_target_model(
+                model_preset=args.model,
+                target_repo=args.agent_repo,
+                target_config=args.agent_config,
+                config_dir=config_dir,
+            )
+            if agent_repo_name == repo_name and agent_config_name == config_name:
+                agent_model = target_model
+            else:
+                agent_model = HuggingFaceModel(
+                    agent_repo_name,
+                    config_dir,
+                    agent_config_name,
+                    hf_token,
+                    use_quantization=True,
+                    quantization_type="4bit",
+                )
+            logger.info(
+                "PRO agent stack (attacker/summarizer/scorer/feedback/refiner): %s (generation_config=%s)",
+                agent_repo_name,
+                agent_config_name,
+            )
+        else:
+            agent_repo_name, agent_config_name = repo_name, config_name
+            agent_model = target_model
+            logger.info("PRO agent stack: same as target (%s)", repo_name)
+
+        attacker = Attacker(agent_model)
+        summarizer = Summarizer(agent_model)
         if args.pro_disable_dual_scorer:
-            scorer = Scorer(model)
+            scorer = Scorer(agent_model)
             logger.info("PRO scorer: single model (dual x_model disabled)")
             run_meta["x_model_repo"] = None
             run_meta["x_model_config"] = None
@@ -453,15 +484,19 @@ if __name__ == '__main__':
             x_model_repo_name = "Qwen/Qwen3-0.6B"
             x_model_config_name = "Qwen3-0.6B"
             x_model = HuggingFaceModel(x_model_repo_name, config_dir, x_model_config_name, hf_token)
-            scorer = Scorer(model, x_model)
-            logger.info("PRO scorer: dual (main=%s, wrapper=%s)", repo_name, x_model_repo_name)
+            scorer = Scorer(agent_model, x_model)
+            logger.info(
+                "PRO scorer: dual (main=%s, wrapper=%s)",
+                agent_repo_name,
+                x_model_repo_name,
+            )
             run_meta["x_model_repo"] = x_model_repo_name
             run_meta["x_model_config"] = x_model_config_name
-        feedback = Feedback(model)
-        refiner = Refiner(model)
-        target = Target(model)
-        run_meta["agent_repo"] = repo_name
-        run_meta["agent_config"] = config_name
+        feedback = Feedback(agent_model)
+        refiner = Refiner(agent_model)
+        target = Target(target_model)
+        run_meta["agent_repo"] = agent_repo_name
+        run_meta["agent_config"] = agent_config_name
     else:
         import torch
 

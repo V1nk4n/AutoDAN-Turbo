@@ -1,7 +1,29 @@
 {
-  "temperature": 0.6,
-  "top_p": 0.9,
-  "max_new_tokens": 512,
-  "repetition_penalty": 1.1,
-  "chat_template": "templates/phi-1_5.jinja"
+  "temperature": 0.4,
+  "top_p": 0.85,
+  "max_new_tokens": 200,
+  "repetition_penalty": 1.2,
+  "no_repeat_ngram_size": 4,
+  "chat_template": "templates/phi-1_5.jinja",
+  "system_prompt": "",
+  "strip_code_drift": true,
+  "instruct_prefix": "Respond in plain English only. Do not write code, Python scripts, email templates, or numbered exercises.\n\n",
+  "stop_sequences": [
+    "\nInstruct:",
+    "\n\nInstruct:",
+    "\nExercise ",
+    "\n\nExercise ",
+    "\nimport ",
+    "\nfrom ",
+    "\ndef ",
+    "\nclass ",
+    "\nprint(",
+    "\nReply ",
+    "\nSubject:",
+    "\nDear [",
+    "----------------------------------------------------------------",
+    "[Audio file]",
+    "\"\"\"\nimport",
+    "\n\"\"\"\nimport"
+  ]
 }

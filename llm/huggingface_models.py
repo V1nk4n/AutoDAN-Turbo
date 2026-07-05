@@ -141,11 +141,12 @@ class HuggingFaceModel:
 
         self.config = json.load(open(f'{config_dir}/generation_configs/{config_name}.json'))
 
-        # ✅ Ưu tiên custom chat_template từ file
-        chat_template_path = f'{config_dir}/{self.config.get("chat_template", "")}'
+        # ✅ Ưu tiên custom chat_template từ file (relative to config_dir)
+        chat_template_rel = (self.config.get("chat_template") or "").strip()
+        chat_template_path = os.path.join(config_dir, chat_template_rel) if chat_template_rel else ""
         custom_template_loaded = False
 
-        if chat_template_path and os.path.exists(chat_template_path):
+        if chat_template_path and os.path.isfile(chat_template_path):
             try:
                 # Load custom chat template từ file
                 with open(chat_template_path, 'r', encoding='utf-8') as f:
@@ -156,6 +157,7 @@ class HuggingFaceModel:
                 print(f"✅ Loaded custom chat template from {chat_template_path}")
             except Exception as e:
                 print(f"⚠️ Failed to load custom chat template from {chat_template_path}: {e}")
+
 
         # ✅ Fallback: dùng chat_template mặc định của tokenizer nếu custom không có
         if not custom_template_loaded:

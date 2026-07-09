@@ -76,7 +76,14 @@ def config():
                        help="Only run warm_up phase, then exit. Saves warm_up results to logs/")
     config.add_argument("--only_lifelong", type=int, default=None,
                        help="Only run a specific lifelong iteration (1-indexed). Skips warm-up; loads warm_up checkpoints for iteration 1, or previous lifelong checkpoints for iteration > 1.")
-    
+    config.add_argument(
+        "--resume_dir",
+        type=str,
+        default=None,
+        help="Reuse an existing logs_per_run/... directory instead of creating a new one. "
+             "Use with --only_lifelong N to continue warm-up/lifelong checkpoints in that folder.",
+    )
+
     config.add_argument("--tts_num_candidates", type=int, default=8, help="Number of candidates to generate for TTS")
     config.add_argument("--tts_enabled", action='store_true', help="Enable TTS")
 
@@ -279,6 +286,50 @@ def build_per_run_dir(per_run_root: str, *, pro_enabled: bool, repo_name: str, d
     return path
 
 
+def resolve_resume_dir(resume_dir: str) -> str:
+    """Normalize --resume_dir to an absolute existing run directory."""
+    path = os.path.abspath(os.path.expanduser(resume_dir.strip()))
+    if not os.path.isdir(path):
+        raise SystemExit(f"--resume_dir does not exist or is not a directory: {path}")
+    return path
+
+
+def validate_resume_checkpoints(per_run_dir: str, *, only_lifelong: int | None, pro_enabled: bool) -> None:
+    """Fail fast if expected warm-up / lifelong files are missing."""
+    if only_lifelong is None:
+        return
+    if only_lifelong < 1:
+        raise SystemExit(f"Invalid --only_lifelong={only_lifelong}; must be >= 1")
+
+    if only_lifelong == 1:
+        required = [
+            os.path.join(per_run_dir, "warm_up_strategy_library.pkl"),
+            os.path.join(per_run_dir, "warm_up_attack_log.json"),
+            os.path.join(per_run_dir, "warm_up_summarizer_log.json"),
+        ]
+    else:
+        required = [
+            os.path.join(per_run_dir, "lifelong_strategy_library.pkl"),
+            os.path.join(per_run_dir, "lifelong_attack_log.json"),
+            os.path.join(per_run_dir, "lifelong_summarizer_log.json"),
+        ]
+    missing = [p for p in required if not os.path.isfile(p)]
+    if missing:
+        raise SystemExit(
+            "Missing checkpoint(s) for --only_lifelong "
+            f"{only_lifelong} under {per_run_dir}:\n  - "
+            + "\n  - ".join(missing)
+        )
+    if pro_enabled:
+        pattern_path = os.path.join(per_run_dir, "pattern_library.json")
+        if not os.path.isfile(pattern_path):
+            raise SystemExit(
+                f"PRO resume expects pattern library at {pattern_path}. "
+                "Re-run with the same --resume_dir after warm-up/lifelong has written it, "
+                "or pass --pattern_filepath explicitly."
+            )
+
+
 _SECRET_ARG_KEYS = frozenset({
     "hf_token", "azure_api_key", "openai_api_key", "deepseek_api_key",
 })
@@ -344,12 +395,35 @@ if __name__ == '__main__':
     log_file = os.path.join(log_dir, "running.log")
     per_run_root = os.path.join(log_dir, "logs_per_run")
     os.makedirs(per_run_root, exist_ok=True)
-    per_run_dir = build_per_run_dir(
-        per_run_root,
-        pro_enabled=args.pro_enabled,
-        repo_name=repo_name,
-        debug=args.debug,
-    )
+    if args.resume_dir:
+        if args.pattern_force_seed:
+            raise SystemExit(
+                "Refuse --pattern_force_seed with --resume_dir: that would wipe the "
+                "existing pattern_library.json. Drop --pattern_force_seed to continue."
+            )
+        per_run_dir = resolve_resume_dir(args.resume_dir)
+        validate_resume_checkpoints(
+            per_run_dir,
+            only_lifelong=args.only_lifelong,
+            pro_enabled=args.pro_enabled,
+        )
+        if args.pattern_filepath == _DEFAULT_PATTERN_PATH:
+            args.pattern_filepath = os.path.join(per_run_dir, "pattern_library.json")
+        if args.only_lifelong is None:
+            # Continuing into the same folder without --only_lifelong will re-run warm-up
+            # and overwrite checkpoints; require an explicit lifelong slice for safety.
+            raise SystemExit(
+                "--resume_dir requires --only_lifelong N so checkpoints are not "
+                "overwritten by a full re-run. Example:\n"
+                "  python main.py --resume_dir <dir> --only_lifelong 2 ..."
+            )
+    else:
+        per_run_dir = build_per_run_dir(
+            per_run_root,
+            pro_enabled=args.pro_enabled,
+            repo_name=repo_name,
+            debug=args.debug,
+        )
     per_run_log_file = os.path.join(per_run_dir, "running.log")
     run_start = time.perf_counter()
     pattern_manager = None
@@ -359,6 +433,8 @@ if __name__ == '__main__':
         "target_repo": repo_name,
         "target_config": config_name,
         "per_run_dir": per_run_dir,
+        "resume_dir": os.path.abspath(args.resume_dir) if args.resume_dir else None,
+        "only_lifelong": args.only_lifelong,
         "pipeline": "pro" if args.pro_enabled else "baseline",
     }
 
@@ -383,7 +459,18 @@ if __name__ == '__main__':
     logger.addHandler(file_handler)
     logger.addHandler(per_run_handler)
     logger.addHandler(console_handler)
-    logger.info("Per-run log directory: %s", per_run_dir)
+    if args.resume_dir:
+        logger.info("Resuming into existing run directory: %s", per_run_dir)
+        if args.only_lifelong is not None:
+            logger.info("Resume mode: --only_lifelong %s", args.only_lifelong)
+        if args.pro_enabled:
+            logger.info("Pattern library (resume): %s", args.pattern_filepath)
+            logger.info(
+                "Epoch refine memory (resume): %s",
+                os.path.join(per_run_dir, "epoch_refine_memory.json"),
+            )
+    else:
+        logger.info("Per-run log directory: %s", per_run_dir)
     logger.info("Target model: %s (generation_config=%s)", repo_name, config_name)
     logger.info("Pipeline mode: %s", "pro" if args.pro_enabled else "baseline")
 

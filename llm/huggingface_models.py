@@ -167,6 +167,48 @@ class HuggingFaceModel:
                 print(f"⚠️ Warning: No chat template available (neither custom nor tokenizer default)")
         print("Model loaded with automatic device mapping across GPUs.")
 
+    @staticmethod
+    def _merge_system_into_messages(messages):
+        """Fold a leading system turn into the first user turn for templates that reject system role."""
+        if not messages or messages[0].get("role") != "system":
+            return messages
+        system_content = str(messages[0].get("content", "")).strip()
+        rest = messages[1:]
+        if not system_content:
+            return rest or messages
+        if not rest:
+            return [{"role": "user", "content": system_content}]
+        merged = []
+        prefixed = False
+        for msg in rest:
+            item = dict(msg)
+            if not prefixed and item.get("role") == "user":
+                item["content"] = f"{system_content}\n\n{item.get('content', '')}"
+                prefixed = True
+            merged.append(item)
+        if not prefixed:
+            merged.insert(0, {"role": "user", "content": system_content})
+        return merged
+
+    def _render_chat_prompt(self, messages, add_generation_prompt=True, **kwargs):
+        try:
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=add_generation_prompt,
+                **kwargs,
+            )
+        except Exception:
+            if messages and messages[0].get("role") == "system":
+                normalized = self._merge_system_into_messages(messages)
+                return self.tokenizer.apply_chat_template(
+                    normalized,
+                    tokenize=False,
+                    add_generation_prompt=add_generation_prompt,
+                    **kwargs,
+                )
+            raise
+
     def generate(self, system: str, user: str, max_length: int = 1000, **kwargs):
         """
         Generate a response based on the input text.
@@ -180,11 +222,11 @@ class HuggingFaceModel:
         Returns:
             str: The generated response from the model.
         """
-        messages = [
-            {'role': 'system', 'content': f'{system}'},
-            {'role': 'user', 'content': f'{user}'},
-        ]
-        plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        messages = []
+        if system and str(system).strip():
+            messages.append({'role': 'system', 'content': str(system)})
+        messages.append({'role': 'user', 'content': f'{user}'})
+        plain_text = self._render_chat_prompt(messages)
 
         # Model and tokenizer will handle device placement automatically
         inputs = self.tokenizer(plain_text, return_tensors="pt")
@@ -207,7 +249,7 @@ class HuggingFaceModel:
         """
         Generate a response from a list of messages.
         """
-        plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        plain_text = self._render_chat_prompt(messages)
 
         inputs = self.tokenizer(plain_text, return_tensors="pt")
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
@@ -231,7 +273,7 @@ class HuggingFaceModel:
         """
         plain_texts = []
         for messages in batch_messages:
-            plain_texts.append(self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
+            plain_texts.append(self._render_chat_prompt(messages))
         inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         
@@ -317,7 +359,7 @@ class HuggingFaceModel:
             {'role': 'assistant', 'content': f'{assistant1}'},
             {'role': 'user', 'content': f'{user2}'},
         ]
-        plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        plain_text = self._render_chat_prompt(messages)
 
         inputs = self.tokenizer(plain_text, return_tensors="pt")
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
@@ -348,11 +390,11 @@ class HuggingFaceModel:
         Returns:
             str: The generated response from the model.
         """
-        messages = [
-            {'role': 'system', 'content': f'{system}'},
-            {'role': 'user', 'content': f'{user}'},
-        ]
-        plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        messages = []
+        if system and str(system).strip():
+            messages.append({'role': 'system', 'content': str(system)})
+        messages.append({'role': 'user', 'content': f'{user}'})
+        plain_text = self._render_chat_prompt(messages)
         plain_text += condition
 
         inputs = self.tokenizer(plain_text, return_tensors="pt")
@@ -414,7 +456,7 @@ class HuggingFaceModel:
                 {'role': 'system', 'content': f'{system}'},
                 {'role': 'user', 'content': f'{user}'},
             ]
-            plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            plain_text = self._render_chat_prompt(messages)
             plain_text += condition
             plain_texts.append(plain_text)
         
@@ -498,7 +540,7 @@ class HuggingFaceModel:
                 {'role': 'system', 'content': f'{system}'},
                 {'role': 'user', 'content': f'{user}'},
             ]
-            plain_texts.append(self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
+            plain_texts.append(self._render_chat_prompt(messages))
 
         inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
 
@@ -528,7 +570,7 @@ class HuggingFaceModel:
             {'role': "system", "content": "You are a helpful assistant."},
             {'role': "user", "content": user_instruction},
         ]
-        prompt_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        prompt_text = self._render_chat_prompt(messages)
         prompt_ids = self.tokenizer.encode(prompt_text, return_tensors="pt")
         target_ids = self.tokenizer.encode(target_string, add_special_tokens=False, return_tensors="pt")
         input_ids = torch.cat([prompt_ids, target_ids], dim=1).to(self.model.device)

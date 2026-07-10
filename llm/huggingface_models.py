@@ -76,8 +76,8 @@ class HuggingFaceModel:
                     added_pad_token = True
             if hasattr(self.tokenizer, "padding_side"):
                 self.tokenizer.padding_side = "left"
-            # ✅ Khi dùng quantization, phải force lên GPU (không thể dùng "auto" vì sẽ dispatch lên CPU/disk)
-            device_map_value = "cuda:0" if torch.cuda.is_available() and use_quantization else "auto"
+            # Keep the full model on GPU when available; "auto" may offload layers to CPU and break generation.
+            device_map_value = "cuda:0" if torch.cuda.is_available() else "auto"
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 device_map=device_map_value,
@@ -117,9 +117,8 @@ class HuggingFaceModel:
                     added_pad_token = True
             if hasattr(self.tokenizer, "padding_side"):
                 self.tokenizer.padding_side = "left"
-            # Load từ local với quantization
-            # ✅ Khi dùng quantization, phải force lên GPU (không thể dùng "auto" vì sẽ dispatch lên CPU/disk)
-            device_map_value = "cuda:0" if torch.cuda.is_available() and use_quantization else "auto"
+            # Keep the full model on GPU when available; "auto" may offload layers to CPU and break generation.
+            device_map_value = "cuda:0" if torch.cuda.is_available() else "auto"
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 device_map=device_map_value,
@@ -209,6 +208,39 @@ class HuggingFaceModel:
                 )
             raise
 
+    def _input_device(self):
+        return getattr(self.model, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+
+    def _max_total_length(self) -> int:
+        cfg = getattr(self.model, "config", None)
+        if cfg is not None:
+            for attr in ("max_position_embeddings", "sliding_window", "model_max_length"):
+                val = getattr(cfg, attr, None)
+                if isinstance(val, int) and val > 0:
+                    return min(val, 8192)
+        return 8192
+
+    def _prepare_generate_inputs(self, inputs, max_new_tokens: int):
+        """Truncate overlong prompts and clamp max_new_tokens to fit the context window."""
+        max_new_tokens = min(int(max_new_tokens), 4096)
+        max_total_length = self._max_total_length()
+        min_new_tokens = 16
+        input_length = inputs["input_ids"].shape[-1]
+
+        if input_length >= max_total_length:
+            truncate_length = max_total_length - min_new_tokens
+            for key, value in inputs.items():
+                if value.shape[-1] > truncate_length:
+                    inputs[key] = value[:, -truncate_length:]
+            input_length = truncate_length
+            max_new_tokens = min_new_tokens
+        elif input_length + max_new_tokens > max_total_length:
+            max_new_tokens = max_total_length - input_length
+
+        if max_new_tokens <= 0:
+            max_new_tokens = min_new_tokens
+        return inputs, max_new_tokens, input_length
+
     def generate(self, system: str, user: str, max_length: int = 1000, **kwargs):
         """
         Generate a response based on the input text.
@@ -228,20 +260,19 @@ class HuggingFaceModel:
         messages.append({'role': 'user', 'content': f'{user}'})
         plain_text = self._render_chat_prompt(messages)
 
-        # Model and tokenizer will handle device placement automatically
         inputs = self.tokenizer(plain_text, return_tensors="pt")
-        # Move inputs to the correct device based on their device_map
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
+        inputs, max_new_tokens, input_length = self._prepare_generate_inputs(inputs, max_length)
 
+        gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
         outputs = self.model.generate(
             **inputs,
-            max_new_tokens=min(max_length, 4096),
+            max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            **kwargs,
+            **gen_kwargs,
         )
-        response_start = inputs["input_ids"].shape[-1]
-        response_ids = outputs[0][response_start:]
+        response_ids = outputs[0][input_length:]
         response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
         return response
 
@@ -252,18 +283,19 @@ class HuggingFaceModel:
         plain_text = self._render_chat_prompt(messages)
 
         inputs = self.tokenizer(plain_text, return_tensors="pt")
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
+        inputs, max_new_tokens, input_length = self._prepare_generate_inputs(inputs, max_new_tokens)
 
+        gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
         outputs = self.model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            **kwargs,
+            **gen_kwargs,
         )
 
-        response_start = inputs["input_ids"].shape[-1]
-        response_ids = outputs[0][response_start:]
+        response_ids = outputs[0][input_length:]
         response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
         return response
 
@@ -275,7 +307,7 @@ class HuggingFaceModel:
         for messages in batch_messages:
             plain_texts.append(self._render_chat_prompt(messages))
         inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
         
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
@@ -303,7 +335,7 @@ class HuggingFaceModel:
             return_tensors="pt",
             padding=True,
         )
-        padded = {k: v.to(self.model.device) for k, v in padded.items()}
+        padded = {k: v.to(self._input_device()) for k, v in padded.items()}
 
         min_new_tokens_list = []
         for ids_list, truncated in zip(row_id_lists, row_truncated):
@@ -362,7 +394,7 @@ class HuggingFaceModel:
         plain_text = self._render_chat_prompt(messages)
 
         inputs = self.tokenizer(plain_text, return_tensors="pt")
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
 
         outputs = self.model.generate(
             **inputs,
@@ -398,7 +430,7 @@ class HuggingFaceModel:
         plain_text += condition
 
         inputs = self.tokenizer(plain_text, return_tensors="pt")
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
         
         # Calculate input length
         input_length = inputs["input_ids"].shape[-1]
@@ -461,7 +493,7 @@ class HuggingFaceModel:
             plain_texts.append(plain_text)
         
         inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
 
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
@@ -491,7 +523,7 @@ class HuggingFaceModel:
             padding=True,
         )
 
-        padded = {k: v.to(self.model.device) for k, v in padded.items()}
+        padded = {k: v.to(self._input_device()) for k, v in padded.items()}
 
         min_new_tokens_list = []
         for ids_list, truncated in zip(row_id_lists, row_truncated):
@@ -544,7 +576,7 @@ class HuggingFaceModel:
 
         inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
 
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
 
         prompt_lens = inputs["attention_mask"].sum(dim=1)
 
@@ -573,7 +605,7 @@ class HuggingFaceModel:
         prompt_text = self._render_chat_prompt(messages)
         prompt_ids = self.tokenizer.encode(prompt_text, return_tensors="pt")
         target_ids = self.tokenizer.encode(target_string, add_special_tokens=False, return_tensors="pt")
-        input_ids = torch.cat([prompt_ids, target_ids], dim=1).to(self.model.device)
+        input_ids = torch.cat([prompt_ids, target_ids], dim=1).to(self._input_device())
         attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)
 
         labels = input_ids.clone()

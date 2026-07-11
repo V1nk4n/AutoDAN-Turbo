@@ -4,7 +4,10 @@ import torch
 import os
 import json
 from huggingface_hub import snapshot_download
+from huggingface_hub.utils import HfHubHTTPError
 from typing import List
+
+from llm.target_resolve import resolve_hf_token
 
 class HuggingFaceModel:
     def __init__(self, repo_name: str, config_dir: str, config_name: str, token=None, use_quantization=False, quantization_type="4bit"):
@@ -17,11 +20,13 @@ class HuggingFaceModel:
             config_name (str): Name of the config file.
             token (str): Hugging Face API token for private models.
         """
+        token = resolve_hf_token(token)
         print(f"Checking for model in '{config_dir}/model_ckpt'...")
         model_dir = f"{config_dir}/model_ckpt"
         if not os.path.exists(model_dir):
             os.makedirs(model_dir)
         model_path = os.path.join(model_dir, repo_name.replace("/", "_"))
+        model_config_path = os.path.join(model_path, "config.json")
 
         quantization_config = None
         torch_dtype = torch.float16
@@ -44,7 +49,7 @@ class HuggingFaceModel:
                 )
             torch_dtype = None  # Don't set torch_dtype when using quantization
 
-        if not os.path.exists(model_path):
+        if not os.path.isfile(model_config_path):
         #     print(f"Model not found in {model_path}. Downloading from Hugging Face...")
         #     AutoModelForCausalLM.from_pretrained(repo_name, token=token).save_pretrained(model_path)
         #     AutoTokenizer.from_pretrained(repo_name, token=token).save_pretrained(model_path)
@@ -56,15 +61,25 @@ class HuggingFaceModel:
     
             # ✅ Dùng snapshot_download để download files trực tiếp
             print("Downloading model files from HuggingFace (this may take a while)...")
-            snapshot_download(
-                repo_id=repo_name,
-                token=token,
-                local_dir=model_path,
-                local_dir_use_symlinks=False,
-            )
+            try:
+                snapshot_download(
+                    repo_id=repo_name,
+                    token=token,
+                    local_dir=model_path,
+                    local_dir_use_symlinks=False,
+                )
+            except HfHubHTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 403:
+                    raise SystemExit(
+                        f"Cannot download gated model '{repo_name}' (HTTP 403).\n"
+                        f"1) Accept the model license on https://huggingface.co/{repo_name}\n"
+                        f"2) Create a HuggingFace access token\n"
+                        f"3) Pass --hf_token 'hf_...' or set HF_TOKEN in the environment"
+                    ) from exc
+                raise
             
             print(f"Model files downloaded to {model_path}.")
-            print("Loading model with quantization...")
+            print("Loading model...")
             
             # Load tokenizer và model từ local với quantization
             self.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token)

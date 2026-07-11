@@ -1,7 +1,7 @@
 from framework import Attacker, Scorer, Summarizer, Retrieval, Target
 from framework.harmbench_classifier import HarmBenchClassifier
 from llm import HuggingFaceModel, OpenAIEmbeddingModel
-from llm.target_resolve import resolve_target_model
+from llm.target_resolve import resolve_target_model, resolve_hf_token
 import argparse
 import json
 import logging
@@ -15,8 +15,12 @@ from pipeline import AutoDANTurbo
 
 def config():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="llama3",
-                        help="Preset khi --target_repo bỏ trống: llama3=Llama-3.2-1B-Instruct, else=gemma-1.1-7b-it")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="llama3",
+        help="Preset khi --target_repo bỏ trống: llama3=Qwen2.5-1.5B-Instruct, smollm2=SmolLM2-1.7B-Instruct, else=gemma-1.1-7b-it",
+    )
     parser.add_argument("--target_repo", type=str, default=None,
                         help="HuggingFace repo id cho target model (override --model)")
     parser.add_argument("--target_config", type=str, default=None,
@@ -171,7 +175,7 @@ if __name__ == "__main__":
 
     # Build models (keep similar to test.py, but configurable via --model)
     config_dir = args.chat_config
-    hf_token = args.hf_token
+    hf_token = resolve_hf_token(args.hf_token)
 
     repo_name, config_name = resolve_target_model(
         model_preset=args.model,
@@ -179,6 +183,7 @@ if __name__ == "__main__":
         target_config=args.target_config,
         config_dir=config_dir,
     )
+    logger.info("Target model: %s (generation_config=%s)", repo_name, config_name)
 
     target_model = HuggingFaceModel(repo_name, config_dir, config_name, hf_token)
 
@@ -194,8 +199,10 @@ if __name__ == "__main__":
             agent_model = target_model
         else:
             agent_model = HuggingFaceModel(agent_repo_name, config_dir, agent_config_name, hf_token)
+        logger.info("Agent model: %s (generation_config=%s)", agent_repo_name, agent_config_name)
     else:
         agent_model = target_model
+        logger.info("Agent model: same as target (%s)", repo_name)
 
     attacker = Attacker(agent_model)
     summarizer = Summarizer(agent_model)

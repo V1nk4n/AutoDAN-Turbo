@@ -6,7 +6,23 @@ import os
 from typing import Optional, Tuple
 
 _PRESET_LLAMA3 = ("Qwen/Qwen2.5-1.5B-Instruct", "Qwen2.5-1.5B-Instruct")
+_PRESET_SMOLLM2 = (
+    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    "SmolLM2-1.7B-Instruct",
+)
 _PRESET_DEFAULT = ("google/gemma-1.1-7b-it", "gemma-it")
+_HF_TOKEN_PLACEHOLDER = "your_hf_token"
+
+
+def resolve_hf_token(token: Optional[str] = None) -> Optional[str]:
+    """Use CLI token when set; otherwise HF_TOKEN / HUGGING_FACE_HUB_TOKEN from env."""
+    if token and token.strip() and token.strip() != _HF_TOKEN_PLACEHOLDER:
+        return token.strip()
+    for env_name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        env_val = os.environ.get(env_name)
+        if env_val and env_val.strip():
+            return env_val.strip()
+    return None
 
 
 def list_generation_configs(config_dir: str) -> list[str]:
@@ -48,6 +64,8 @@ def resolve_target_model(
                     f"Pass --target_config explicitly. "
                     f"Available: {', '.join(available)}"
                 )
+    elif model_preset.lower() == "smollm2":
+        repo_name, config_name = _PRESET_SMOLLM2
     elif model_preset == "llama3":
         repo_name, config_name = _PRESET_LLAMA3
     else:

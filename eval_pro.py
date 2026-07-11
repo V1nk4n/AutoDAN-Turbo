@@ -1,7 +1,7 @@
 from framework import Attacker, Scorer, Summarizer, Retrieval, Target, Feedback, Refiner, PatternManager
 from framework.harmbench_classifier import HarmBenchClassifier
 from llm import HuggingFaceModel, OpenAIEmbeddingModel
-from llm.target_resolve import resolve_target_model
+from llm.target_resolve import resolve_hf_token, resolve_target_model
 import argparse
 import json
 import logging
@@ -17,7 +17,12 @@ def config():
     parser = argparse.ArgumentParser(
         description="Evaluate trained PRO pipeline (aligned with main.py training flags).",
     )
-    parser.add_argument("--model", type=str, default="llama3")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="llama3",
+        help="Model preset: llama3, smollm2, or gemma fallback",
+    )
     parser.add_argument("--target_repo", type=str, default=None)
     parser.add_argument("--target_config", type=str, default=None)
     parser.add_argument("--agent_repo", type=str, default=None,
@@ -273,7 +278,7 @@ if __name__ == "__main__":
     logger.info("Loaded %d eval requests from %s split=%s", len(eval_requests), args.data, args.split)
 
     config_dir = args.chat_config
-    hf_token = args.hf_token
+    hf_token = resolve_hf_token(args.hf_token)
 
     repo_name, config_name = resolve_target_model(
         model_preset=args.model,

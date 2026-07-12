@@ -1425,9 +1425,9 @@ class AutoDANTurboPro():
 
     def _mfps_get_f1_thresholds(self):
         profile_defaults = {
-            "conservative": {"score_high": 0.75, "score_low": 0.25, "uncertainty_gate": 0.06},
-            "balanced": {"score_high": 0.70, "score_low": 0.30, "uncertainty_gate": 0.10},
-            "aggressive": {"score_high": 0.65, "score_low": 0.35, "uncertainty_gate": 0.16},
+            "conservative": {"score_high": 0.50, "score_low": 0.25, "uncertainty_gate": 0.06},
+            "balanced": {"score_high": 0.50, "score_low": 0.30, "uncertainty_gate": 0.10},
+            "aggressive": {"score_high": 0.50, "score_low": 0.35, "uncertainty_gate": 0.16},
         }
         p = profile_defaults.get(self.mfps_profile, profile_defaults["balanced"])
         # uncertainty band from CLI still acts as hard cap/floor for easier manual tuning

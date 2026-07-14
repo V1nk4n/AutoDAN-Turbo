@@ -1424,13 +1424,17 @@ class AutoDANTurboPro():
         return score, uncertainty, "uncertain_probe", "escalate"
 
     def _mfps_get_f1_thresholds(self):
+        # F1 practical range is ~[0.2, 0.6] under current scoring, so
+        # uncertainty = max(0, 1 - 2*|s-0.5|) typically lands in ~[0.4, 1.0].
+        # Gates below ~0.4 never fire; gates near 0.8–0.9 allow confident
+        # decisions only near the ends of that score range.
         profile_defaults = {
-            "conservative": {"score_high": 0.75, "score_low": 0.25, "uncertainty_gate": 0.06},
-            "balanced": {"score_high": 0.70, "score_low": 0.30, "uncertainty_gate": 0.10},
-            "aggressive": {"score_high": 0.65, "score_low": 0.35, "uncertainty_gate": 0.16},
+            "conservative": {"score_high": 0.50, "score_low": 0.25, "uncertainty_gate": 0.80},
+            "balanced": {"score_high": 0.50, "score_low": 0.30, "uncertainty_gate": 0.85},
+            "aggressive": {"score_high": 0.50, "score_low": 0.35, "uncertainty_gate": 0.90},
         }
         p = profile_defaults.get(self.mfps_profile, profile_defaults["balanced"])
-        # uncertainty band from CLI still acts as hard cap/floor for easier manual tuning
+        # CLI band acts as a floor: effective_gate = max(band, profile_gate)
         p["uncertainty_gate"] = max(float(self.mfps_uncertainty_band), float(p["uncertainty_gate"]))
         return p
 

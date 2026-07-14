@@ -25,8 +25,12 @@ import pickle
 
 def config():
     config = argparse.ArgumentParser()
-    config.add_argument("--model", type=str, default="llama3",
-                        help="Preset when --target_repo is omitted: llama3=Qwen2.5-1.5B-Instruct, else=gemma-1.1-7b-it")
+    config.add_argument(
+        "--model",
+        type=str,
+        default="llama3",
+        help="Preset when --target_repo is omitted: llama3=Qwen2.5-1.5B-Instruct, smollm2=SmolLM2-1.7B-Instruct, else=gemma-1.1-7b-it",
+    )
     config.add_argument("--target_repo", type=str, default=None,
                         help="HuggingFace repo id for target model (one model per run; overrides --model)")
     config.add_argument("--target_config", type=str, default=None,

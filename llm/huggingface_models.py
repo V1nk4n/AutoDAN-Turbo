@@ -4,7 +4,10 @@ import torch
 import os
 import json
 from huggingface_hub import snapshot_download
+from huggingface_hub.utils import HfHubHTTPError
 from typing import List
+
+from llm.target_resolve import resolve_hf_token
 
 class HuggingFaceModel:
     def __init__(self, repo_name: str, config_dir: str, config_name: str, token=None, use_quantization=False, quantization_type="4bit"):
@@ -17,11 +20,13 @@ class HuggingFaceModel:
             config_name (str): Name of the config file.
             token (str): Hugging Face API token for private models.
         """
+        token = resolve_hf_token(token)
         print(f"Checking for model in '{config_dir}/model_ckpt'...")
         model_dir = f"{config_dir}/model_ckpt"
         if not os.path.exists(model_dir):
             os.makedirs(model_dir)
         model_path = os.path.join(model_dir, repo_name.replace("/", "_"))
+        model_config_path = os.path.join(model_path, "config.json")
 
         quantization_config = None
         torch_dtype = torch.float16
@@ -44,7 +49,7 @@ class HuggingFaceModel:
                 )
             torch_dtype = None  # Don't set torch_dtype when using quantization
 
-        if not os.path.exists(model_path):
+        if not os.path.isfile(model_config_path):
         #     print(f"Model not found in {model_path}. Downloading from Hugging Face...")
         #     AutoModelForCausalLM.from_pretrained(repo_name, token=token).save_pretrained(model_path)
         #     AutoTokenizer.from_pretrained(repo_name, token=token).save_pretrained(model_path)
@@ -56,15 +61,25 @@ class HuggingFaceModel:
     
             # ✅ Dùng snapshot_download để download files trực tiếp
             print("Downloading model files from HuggingFace (this may take a while)...")
-            snapshot_download(
-                repo_id=repo_name,
-                token=token,
-                local_dir=model_path,
-                local_dir_use_symlinks=False,
-            )
+            try:
+                snapshot_download(
+                    repo_id=repo_name,
+                    token=token,
+                    local_dir=model_path,
+                    local_dir_use_symlinks=False,
+                )
+            except HfHubHTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 403:
+                    raise SystemExit(
+                        f"Cannot download gated model '{repo_name}' (HTTP 403).\n"
+                        f"1) Accept the model license on https://huggingface.co/{repo_name}\n"
+                        f"2) Create a HuggingFace access token\n"
+                        f"3) Pass --hf_token 'hf_...' or set HF_TOKEN in the environment"
+                    ) from exc
+                raise
             
             print(f"Model files downloaded to {model_path}.")
-            print("Loading model with quantization...")
+            print("Loading model...")
             
             # Load tokenizer và model từ local với quantization
             self.tokenizer = AutoTokenizer.from_pretrained(model_path, token=token)
@@ -76,8 +91,8 @@ class HuggingFaceModel:
                     added_pad_token = True
             if hasattr(self.tokenizer, "padding_side"):
                 self.tokenizer.padding_side = "left"
-            # ✅ Khi dùng quantization, phải force lên GPU (không thể dùng "auto" vì sẽ dispatch lên CPU/disk)
-            device_map_value = "cuda:0" if torch.cuda.is_available() and use_quantization else "auto"
+            # Keep the full model on GPU when available; "auto" may offload layers to CPU and break generation.
+            device_map_value = "cuda:0" if torch.cuda.is_available() else "auto"
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 device_map=device_map_value,
@@ -117,9 +132,8 @@ class HuggingFaceModel:
                     added_pad_token = True
             if hasattr(self.tokenizer, "padding_side"):
                 self.tokenizer.padding_side = "left"
-            # Load từ local với quantization
-            # ✅ Khi dùng quantization, phải force lên GPU (không thể dùng "auto" vì sẽ dispatch lên CPU/disk)
-            device_map_value = "cuda:0" if torch.cuda.is_available() and use_quantization else "auto"
+            # Keep the full model on GPU when available; "auto" may offload layers to CPU and break generation.
+            device_map_value = "cuda:0" if torch.cuda.is_available() else "auto"
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 device_map=device_map_value,
@@ -178,6 +192,7 @@ class HuggingFaceModel:
         print(f"Max context length for generation: {self._max_context_length}")
         print("Model loaded with automatic device mapping across GPUs.")
 
+<<<<<<< HEAD
     def _trim_stop_sequences(self, text: str) -> str:
         stops = list(self.config.get("stop_sequences", []) or [])
         if not text or not stops:
@@ -233,6 +248,82 @@ class HuggingFaceModel:
         if max_new_tokens <= 0:
             max_new_tokens = min_new_tokens
         return inputs, max_new_tokens
+=======
+    @staticmethod
+    def _merge_system_into_messages(messages):
+        """Fold a leading system turn into the first user turn for templates that reject system role."""
+        if not messages or messages[0].get("role") != "system":
+            return messages
+        system_content = str(messages[0].get("content", "")).strip()
+        rest = messages[1:]
+        if not system_content:
+            return rest or messages
+        if not rest:
+            return [{"role": "user", "content": system_content}]
+        merged = []
+        prefixed = False
+        for msg in rest:
+            item = dict(msg)
+            if not prefixed and item.get("role") == "user":
+                item["content"] = f"{system_content}\n\n{item.get('content', '')}"
+                prefixed = True
+            merged.append(item)
+        if not prefixed:
+            merged.insert(0, {"role": "user", "content": system_content})
+        return merged
+
+    def _render_chat_prompt(self, messages, add_generation_prompt=True, **kwargs):
+        try:
+            return self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=add_generation_prompt,
+                **kwargs,
+            )
+        except Exception:
+            if messages and messages[0].get("role") == "system":
+                normalized = self._merge_system_into_messages(messages)
+                return self.tokenizer.apply_chat_template(
+                    normalized,
+                    tokenize=False,
+                    add_generation_prompt=add_generation_prompt,
+                    **kwargs,
+                )
+            raise
+
+    def _input_device(self):
+        return getattr(self.model, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+
+    def _max_total_length(self) -> int:
+        cfg = getattr(self.model, "config", None)
+        if cfg is not None:
+            for attr in ("max_position_embeddings", "sliding_window", "model_max_length"):
+                val = getattr(cfg, attr, None)
+                if isinstance(val, int) and val > 0:
+                    return min(val, 8192)
+        return 8192
+
+    def _prepare_generate_inputs(self, inputs, max_new_tokens: int):
+        """Truncate overlong prompts and clamp max_new_tokens to fit the context window."""
+        max_new_tokens = min(int(max_new_tokens), 4096)
+        max_total_length = self._max_total_length()
+        min_new_tokens = 16
+        input_length = inputs["input_ids"].shape[-1]
+
+        if input_length >= max_total_length:
+            truncate_length = max_total_length - min_new_tokens
+            for key, value in inputs.items():
+                if value.shape[-1] > truncate_length:
+                    inputs[key] = value[:, -truncate_length:]
+            input_length = truncate_length
+            max_new_tokens = min_new_tokens
+        elif input_length + max_new_tokens > max_total_length:
+            max_new_tokens = max_total_length - input_length
+
+        if max_new_tokens <= 0:
+            max_new_tokens = min_new_tokens
+        return inputs, max_new_tokens, input_length
+>>>>>>> origin/dev-time-improve-strategy
 
     def generate(self, system: str, user: str, max_length: int = 1000, **kwargs):
         """
@@ -247,6 +338,7 @@ class HuggingFaceModel:
         Returns:
             str: The generated response from the model.
         """
+<<<<<<< HEAD
         messages = self._build_chat_messages(system, user)
         try:
             plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -260,13 +352,48 @@ class HuggingFaceModel:
 
         inputs, max_new_tokens = self._tokenize_for_generate(plain_text, max_length)
         gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
+=======
+        messages = []
+        if system and str(system).strip():
+            messages.append({'role': 'system', 'content': str(system)})
+        messages.append({'role': 'user', 'content': f'{user}'})
+        plain_text = self._render_chat_prompt(messages)
 
+        inputs = self.tokenizer(plain_text, return_tensors="pt")
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
+        inputs, max_new_tokens, input_length = self._prepare_generate_inputs(inputs, max_length)
+
+        gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
         outputs = self.model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
             **gen_kwargs,
+        )
+        response_ids = outputs[0][input_length:]
+        response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+        return response
+
+    def generate_from_messages(self, messages, max_new_tokens, **kwargs):
+        """
+        Generate a response from a list of messages.
+        """
+        plain_text = self._render_chat_prompt(messages)
+
+        inputs = self.tokenizer(plain_text, return_tensors="pt")
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
+        inputs, max_new_tokens, input_length = self._prepare_generate_inputs(inputs, max_new_tokens)
+>>>>>>> origin/dev-time-improve-strategy
+
+        gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            **gen_kwargs,
+<<<<<<< HEAD
         )
         response_start = inputs["input_ids"].shape[-1]
         response_ids = outputs[0][response_start:]
@@ -289,10 +416,11 @@ class HuggingFaceModel:
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
             **gen_kwargs,
+=======
+>>>>>>> origin/dev-time-improve-strategy
         )
 
-        response_start = inputs["input_ids"].shape[-1]
-        response_ids = outputs[0][response_start:]
+        response_ids = outputs[0][input_length:]
         response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
         return self._trim_stop_sequences(response)
 
@@ -302,10 +430,16 @@ class HuggingFaceModel:
         """
         plain_texts = []
         for messages in batch_messages:
+<<<<<<< HEAD
             filtered = self._filter_messages(messages)
             plain_texts.append(self.tokenizer.apply_chat_template(filtered, tokenize=False, add_generation_prompt=True))
         inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
         inputs = {k: v.to(self._device()) for k, v in inputs.items()}
+=======
+            plain_texts.append(self._render_chat_prompt(messages))
+        inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
+>>>>>>> origin/dev-time-improve-strategy
         
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
@@ -333,7 +467,11 @@ class HuggingFaceModel:
             return_tensors="pt",
             padding=True,
         )
+<<<<<<< HEAD
         padded = {k: v.to(self._device()) for k, v in padded.items()}
+=======
+        padded = {k: v.to(self._input_device()) for k, v in padded.items()}
+>>>>>>> origin/dev-time-improve-strategy
 
         min_new_tokens_list = []
         for ids_list, truncated in zip(row_id_lists, row_truncated):
@@ -388,11 +526,19 @@ class HuggingFaceModel:
             {'role': 'user', 'content': f'{user1}'},
             {'role': 'assistant', 'content': f'{assistant1}'},
             {'role': 'user', 'content': f'{user2}'},
+<<<<<<< HEAD
         ])
         plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
         inputs, max_new_tokens = self._tokenize_for_generate(plain_text, max_length)
         gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
+=======
+        ]
+        plain_text = self._render_chat_prompt(messages)
+
+        inputs = self.tokenizer(plain_text, return_tensors="pt")
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
+>>>>>>> origin/dev-time-improve-strategy
 
         outputs = self.model.generate(
             **inputs,
@@ -420,12 +566,54 @@ class HuggingFaceModel:
         Returns:
             str: The generated response from the model.
         """
+<<<<<<< HEAD
         messages = self._build_chat_messages(system, user)
         plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         plain_text += condition
 
         inputs, max_new_tokens = self._tokenize_for_generate(plain_text, max_length)
         gen_kwargs = {k: v for k, v in kwargs.items() if k not in ("max_new_tokens", "max_length")}
+=======
+        messages = []
+        if system and str(system).strip():
+            messages.append({'role': 'system', 'content': str(system)})
+        messages.append({'role': 'user', 'content': f'{user}'})
+        plain_text = self._render_chat_prompt(messages)
+        plain_text += condition
+
+        inputs = self.tokenizer(plain_text, return_tensors="pt")
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
+        
+        # Calculate input length
+        input_length = inputs["input_ids"].shape[-1]
+        
+        # Use max_new_tokens instead of max_length to avoid conflicts
+        # max_length is treated as max_new_tokens (tokens to generate)
+        # But we need to ensure it doesn't exceed model's context window
+        max_new_tokens = min(max_length, 4096)  # Cap at 4096 for safety
+        
+        # If input is already too long, reduce max_new_tokens proportionally
+        # Most models have context window of 8192 or more
+        # We'll allow up to 8192 total tokens (input + output)
+        max_total_length = 8192
+        min_new_tokens = 16  # Minimum tokens to generate (fallback value)
+        
+        if input_length >= max_total_length:
+            # Input is too long, truncate it to make room for output
+            # Keep the most recent part of the input (tail) and reserve space for output
+            truncate_length = max_total_length - min_new_tokens
+            for k, v in inputs.items():
+                if v.shape[-1] > truncate_length:
+                    inputs[k] = v[:, -truncate_length:]
+                    input_length = truncate_length
+            max_new_tokens = min_new_tokens
+        elif input_length + max_new_tokens > max_total_length:
+            max_new_tokens = max_total_length - input_length
+        
+        # Final safety check: ensure max_new_tokens is always > 0
+        if max_new_tokens <= 0:
+            max_new_tokens = min_new_tokens
+>>>>>>> origin/dev-time-improve-strategy
 
         outputs = self.model.generate(
             **inputs,
@@ -449,13 +637,25 @@ class HuggingFaceModel:
             return []
         plain_texts = []
         for condition, system, user in zip(conditions, systems, users):
+<<<<<<< HEAD
             messages = self._build_chat_messages(system, user)
             plain_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+=======
+            messages = [
+                {'role': 'system', 'content': f'{system}'},
+                {'role': 'user', 'content': f'{user}'},
+            ]
+            plain_text = self._render_chat_prompt(messages)
+>>>>>>> origin/dev-time-improve-strategy
             plain_text += condition
             plain_texts.append(plain_text)
         
         inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
+<<<<<<< HEAD
         inputs = {k: v.to(self._device()) for k, v in inputs.items()}
+=======
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
+>>>>>>> origin/dev-time-improve-strategy
 
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
@@ -485,7 +685,11 @@ class HuggingFaceModel:
             padding=True,
         )
 
+<<<<<<< HEAD
         padded = {k: v.to(self._device()) for k, v in padded.items()}
+=======
+        padded = {k: v.to(self._input_device()) for k, v in padded.items()}
+>>>>>>> origin/dev-time-improve-strategy
 
         min_new_tokens_list = []
         for ids_list, truncated in zip(row_id_lists, row_truncated):
@@ -530,12 +734,21 @@ class HuggingFaceModel:
 
         plain_texts = []
         for system, user in zip(systems, users):
+<<<<<<< HEAD
             messages = self._build_chat_messages(system, user)
             plain_texts.append(self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
+=======
+            messages = [
+                {'role': 'system', 'content': f'{system}'},
+                {'role': 'user', 'content': f'{user}'},
+            ]
+            plain_texts.append(self._render_chat_prompt(messages))
+>>>>>>> origin/dev-time-improve-strategy
 
         inputs = self.tokenizer(plain_texts, return_tensors="pt", padding=True, truncation=True)
         inputs = {k: v.to(self._device()) for k, v in inputs.items()}
 
+<<<<<<< HEAD
         input_ids = inputs["input_ids"]
         attention_mask = inputs["attention_mask"]
         batch_size = input_ids.shape[0]
@@ -543,6 +756,9 @@ class HuggingFaceModel:
         min_new_tokens = 16
         truncate_length = max(1, max_total_length - min_new_tokens)
         max_new_tokens = min(max_length, 4096)
+=======
+        inputs = {k: v.to(self._input_device()) for k, v in inputs.items()}
+>>>>>>> origin/dev-time-improve-strategy
 
         row_id_lists = []
         row_truncated = []
@@ -597,6 +813,7 @@ class HuggingFaceModel:
         return responses
 
     def get_negative_log_likelihood(self, user_instruction: str, target_string: str):
+<<<<<<< HEAD
         messages = self._build_chat_messages("You are a helpful assistant.", user_instruction)
         prompt_text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         prompt_ids = self.tokenizer.encode(prompt_text, return_tensors="pt")
@@ -614,6 +831,16 @@ class HuggingFaceModel:
                 input_ids = input_ids[:, -max_ctx:]
                 prompt_ids = input_ids[:, : max(1, input_ids.shape[1] - target_ids.shape[1])]
             input_ids = input_ids.to(self._device())
+=======
+        messages = [
+            {'role': "system", "content": "You are a helpful assistant."},
+            {'role': "user", "content": user_instruction},
+        ]
+        prompt_text = self._render_chat_prompt(messages)
+        prompt_ids = self.tokenizer.encode(prompt_text, return_tensors="pt")
+        target_ids = self.tokenizer.encode(target_string, add_special_tokens=False, return_tensors="pt")
+        input_ids = torch.cat([prompt_ids, target_ids], dim=1).to(self._input_device())
+>>>>>>> origin/dev-time-improve-strategy
         attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)
 
         labels = input_ids.clone()

@@ -1,0 +1,15 @@
+{
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "max_new_tokens": 512,
+  "repetition_penalty": 1.1,
+  "no_repeat_ngram_size": 3,
+  "system_prompt": "You are a helpful assistant.",
+  "eos_extra_tokens": [
+    "<|im_end|>"
+  ],
+  "stop_sequences": [
+    "<|im_end|>",
+    "<|im_start|>"
+  ]
+}

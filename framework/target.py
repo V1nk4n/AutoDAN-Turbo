@@ -1,6 +1,10 @@
-import os
-import json
 import re
+
+_CODE_START = re.compile(
+    r'(\n\s*(?:import|from|def|class)\s|\n\s*print\s*\(|"""\s*\n\s*(?:import|from|print)|\n\s*```|\n\s*#\s*Solution)',
+    re.MULTILINE,
+)
+
 
 class Target():
     '''
@@ -9,20 +13,96 @@ class Target():
     def __init__(self, model):
         self.model = model
 
-    def respond(self, prompt, max_new_tokens=150):
-        # ✅ Giảm max_length để tăng tốc
-        response = self.model.generate("You are a helpful assistant.", prompt, max_length=max_new_tokens, do_sample=True, temperature=0.6, top_p=0.9)
+    def _trim_at_stops(self, text: str, stop_sequences) -> str:
+        if not text or not stop_sequences:
+            return text
+        earliest = len(text)
+        for stop in stop_sequences:
+            if not stop:
+                continue
+            idx = text.find(stop)
+            if idx != -1 and idx < earliest:
+                earliest = idx
+        if earliest < len(text):
+            return text[:earliest].rstrip()
+        return text
+
+    def _strip_code_drift(self, text: str) -> str:
+        if not text:
+            return text
+        match = _CODE_START.search(text)
+        if match:
+            return text[:match.start()].rstrip()
+        stripped = text.lstrip()
+        if stripped.startswith('"""') and ('import ' in stripped or 'print(' in stripped):
+            return ""
+        return text
+
+    def _generation_kwargs(self, max_new_tokens=None):
+        cfg = getattr(self.model, 'config', {}) or {}
+        temperature = float(cfg.get('temperature', 0.6))
+        kwargs = {
+            'do_sample': temperature > 0,
+            'temperature': max(temperature, 1e-5),
+            'top_p': float(cfg.get('top_p', 0.9)),
+        }
+        if not kwargs['do_sample']:
+            kwargs.pop('temperature', None)
+            kwargs.pop('top_p', None)
+        if 'repetition_penalty' in cfg:
+            kwargs['repetition_penalty'] = float(cfg['repetition_penalty'])
+        if 'no_repeat_ngram_size' in cfg:
+            kwargs['no_repeat_ngram_size'] = int(cfg['no_repeat_ngram_size'])
+        cfg_max = int(cfg.get('max_new_tokens', 256))
+        if max_new_tokens is None:
+            out_max = cfg_max
+        else:
+            out_max = min(int(max_new_tokens), cfg_max) if cfg_max > 0 else int(max_new_tokens)
+        stops = list(cfg.get('stop_sequences', []) or [])
+        prefix = cfg.get('instruct_prefix', '') or ''
+        system_prompt = cfg.get('system_prompt', 'You are a helpful assistant.')
+        if system_prompt is None:
+            system_prompt = ''
+        strip_code = bool(cfg.get('strip_code_drift', False) or prefix)
+        return out_max, kwargs, stops, prefix, system_prompt, strip_code
+
+    def _postprocess(self, response, stops, strip_code):
+        response = self._trim_at_stops(response, stops)
+        if strip_code:
+            response = self._strip_code_drift(response)
         return response
 
+    def _prefix_last_user(self, messages, prefix):
+        if not prefix or not messages:
+            return messages
+        out = [dict(m) for m in messages]
+        for i in range(len(out) - 1, -1, -1):
+            if out[i].get('role') == 'user':
+                out[i]['content'] = f"{prefix}{out[i].get('content', '')}"
+                break
+        return out
+
+    def respond(self, prompt, max_new_tokens=150):
+        out_max, gen_kwargs, stops, prefix, system_prompt, strip_code = self._generation_kwargs(max_new_tokens)
+        wrapped_prompt = f"{prefix}{prompt}" if prefix else prompt
+        response = self.model.generate(system_prompt, wrapped_prompt, max_length=out_max, **gen_kwargs)
+        return self._postprocess(response, stops, strip_code)
+
     def respond_batch(self, prompts, batch_size=2, max_new_tokens=150):
-        default_system = "You are a helpful assistant."
+        out_max, gen_kwargs, stops, prefix, system_prompt, strip_code = self._generation_kwargs(max_new_tokens)
+        default_system = system_prompt if system_prompt is not None else "You are a helpful assistant."
         responses = []
         for start in range(0, len(prompts), batch_size):
-            chunk = prompts[start:start+batch_size]
+            chunk = prompts[start:start + batch_size]
             systems = [p.get("attacker_system", default_system) for p in chunk]
-            users = [p["prompt"] for p in chunk]
-            chunk_responses = self.model.generate_batch(systems, users, max_length=max_new_tokens, do_sample=True, temperature=0.6, top_p=0.9)
-            responses.extend(chunk_responses)
+            users = []
+            for p in chunk:
+                user = p["prompt"]
+                users.append(f"{prefix}{user}" if prefix else user)
+            chunk_responses = self.model.generate_batch(
+                systems, users, max_length=out_max, **gen_kwargs
+            )
+            responses.extend(self._postprocess(r, stops, strip_code) for r in chunk_responses)
         return responses
 
     def is_refusal(self, response):
@@ -82,15 +162,27 @@ class Target():
             if re.search(pattern, response):
                 return True
         return False
-    
-    def respond_messages(self, messages, max_new_tokens=150):
-        full_messages = [{"role": "system", "content": "You are a helpful assistant."}] + messages
-        response = self.model.generate_from_messages(full_messages, max_new_tokens)
-        return response
-    
-    def respond_messages_batch(self, batch_messages, batch_size=2, max_new_tokens=150):
-        full_batch_messages = [[{"role": "system", "content": "You are a helpful assistant."}] + messages for messages in batch_messages]
-        responses = self.model.generate_from_messages_batch(full_batch_messages, max_new_tokens, batch_size=batch_size)
-        return responses
 
-        
+    def respond_messages(self, messages, max_new_tokens=150):
+        out_max, gen_kwargs, stops, prefix, system_prompt, strip_code = self._generation_kwargs(max_new_tokens)
+        full_messages = []
+        if system_prompt and str(system_prompt).strip():
+            full_messages.append({"role": "system", "content": system_prompt})
+        full_messages.extend(messages)
+        full_messages = self._prefix_last_user(full_messages, prefix)
+        response = self.model.generate_from_messages(full_messages, out_max, **gen_kwargs)
+        return self._postprocess(response, stops, strip_code)
+
+    def respond_messages_batch(self, batch_messages, batch_size=2, max_new_tokens=150):
+        out_max, gen_kwargs, stops, prefix, system_prompt, strip_code = self._generation_kwargs(max_new_tokens)
+        full_batch_messages = []
+        for messages in batch_messages:
+            full_messages = []
+            if system_prompt and str(system_prompt).strip():
+                full_messages.append({"role": "system", "content": system_prompt})
+            full_messages.extend(messages)
+            full_batch_messages.append(self._prefix_last_user(full_messages, prefix))
+        responses = self.model.generate_from_messages_batch(
+            full_batch_messages, out_max, batch_size=batch_size, **gen_kwargs
+        )
+        return [self._postprocess(r, stops, strip_code) for r in responses]

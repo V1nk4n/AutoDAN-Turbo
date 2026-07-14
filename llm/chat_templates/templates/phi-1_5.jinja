@@ -3,11 +3,11 @@
 {%- if message['role'] == 'user' %}
 Instruct: {{ message['content'] }}
 
-{%- elif message['role'] == 'assistant' %}
+{% elif message['role'] == 'assistant' %}
 Output: {{ message['content'] }}
 
-{%- endif %}
+{% endif %}
 {%- endfor %}
-{%- if add_generation_prompt %}
+{% if add_generation_prompt %}
 Output:
 {%- endif %}

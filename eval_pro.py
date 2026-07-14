@@ -17,11 +17,14 @@ def config():
     parser = argparse.ArgumentParser(
         description="Evaluate trained PRO pipeline (aligned with main.py training flags).",
     )
-    parser.add_argument("--model", type=str, default="llama3")
-    parser.add_argument("--target_repo", type=str, default=None)
-    parser.add_argument("--target_config", type=str, default=None)
+    parser.add_argument("--model", type=str, default="llama3",
+                        help="Preset when --target_repo omitted: llama3=Qwen2.5-1.5B-Instruct, phi=microsoft/phi-1_5, else=gemma-1.1-7b-it")
+    parser.add_argument("--target_repo", type=str, default=None,
+                        help="HuggingFace repo id for target (override --model), e.g. microsoft/phi-1_5")
+    parser.add_argument("--target_config", type=str, default=None,
+                        help="Generation config name (auto: phi-1_5 for microsoft/phi-1_5)")
     parser.add_argument("--agent_repo", type=str, default=None,
-                        help="HuggingFace repo id for attacker/summarizer/scorer/feedback/refiner (default: same as target)")
+                        help="HuggingFace repo for attacker/summarizer/scorer/feedback/refiner (default: same as target; use instruct model with phi-1_5 target)")
     parser.add_argument("--agent_config", type=str, default=None,
                         help="Generation config for agent model (inferred from repo tail if omitted)")
     parser.add_argument("--chat_config", type=str, default="./llm/chat_templates")
@@ -282,6 +285,12 @@ if __name__ == "__main__":
         config_dir=config_dir,
     )
     logger.info("Target model: %s (generation_config=%s)", repo_name, config_name)
+    if "phi-1_5" in repo_name.lower() and not args.agent_repo:
+        logger.warning(
+            "microsoft/phi-1_5 is a completion model; without --agent_repo, "
+            "attacker/scorer also use phi and quality will be poor. "
+            "Recommended: --agent_repo Qwen/Qwen2.5-1.5B-Instruct"
+        )
 
     target_model = HuggingFaceModel(
         repo_name,

@@ -16,13 +16,13 @@ from pipeline import AutoDANTurbo
 def config():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="llama3",
-                        help="Preset khi --target_repo bỏ trống: llama3=Llama-3.2-1B-Instruct, else=gemma-1.1-7b-it")
+                        help="Preset khi --target_repo bỏ trống: llama3=Qwen2.5-1.5B-Instruct, phi=microsoft/phi-1_5, else=gemma-1.1-7b-it")
     parser.add_argument("--target_repo", type=str, default=None,
-                        help="HuggingFace repo id cho target model (override --model)")
+                        help="HuggingFace repo id cho target model (override --model), e.g. microsoft/phi-1_5")
     parser.add_argument("--target_config", type=str, default=None,
-                        help="Generation config name trong chat_config/generation_configs/ (tự infer từ repo tail nếu bỏ trống)")
+                        help="Generation config name trong chat_config/generation_configs/ (tự infer từ repo tail nếu bỏ trống; phi-1_5 cho microsoft/phi-1_5)")
     parser.add_argument("--agent_repo", type=str, default=None,
-                        help="HuggingFace repo id cho attacker/summarizer/scorer (mặc định: dùng cùng model với target)")
+                        help="HuggingFace repo id cho attacker/summarizer/scorer (mặc định: dùng cùng model với target; với phi-1_5 nên truyền instruct model riêng)")
     parser.add_argument("--agent_config", type=str, default=None,
                         help="Generation config name cho agent (tự infer nếu bỏ trống)")
     parser.add_argument("--chat_config", type=str, default="./llm/chat_templates")
@@ -179,6 +179,13 @@ if __name__ == "__main__":
         target_config=args.target_config,
         config_dir=config_dir,
     )
+    logger.info("Target model: %s (generation_config=%s)", repo_name, config_name)
+    if "phi-1_5" in repo_name.lower() and not args.agent_repo:
+        logger.warning(
+            "microsoft/phi-1_5 is a completion model; without --agent_repo, "
+            "attacker/scorer also use phi and quality will be poor. "
+            "Recommended: --agent_repo Qwen/Qwen2.5-1.5B-Instruct"
+        )
 
     target_model = HuggingFaceModel(repo_name, config_dir, config_name, hf_token)
 

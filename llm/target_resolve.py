@@ -7,6 +7,8 @@ from typing import Optional, Tuple
 
 _PRESET_LLAMA3 = ("Qwen/Qwen2.5-1.5B-Instruct", "Qwen2.5-1.5B-Instruct")
 _PRESET_DEFAULT = ("google/gemma-1.1-7b-it", "gemma-it")
+_PRESET_PHI15 = ("microsoft/phi-1_5", "phi-1_5")
+_PHI_PRESETS = {"phi", "phi15", "phi-1.5", "phi-1_5", "phi1.5"}
 
 
 def list_generation_configs(config_dir: str) -> list[str]:
@@ -50,6 +52,8 @@ def resolve_target_model(
                 )
     elif model_preset == "llama3":
         repo_name, config_name = _PRESET_LLAMA3
+    elif (model_preset or "").strip().lower() in _PHI_PRESETS:
+        repo_name, config_name = _PRESET_PHI15
     else:
         repo_name, config_name = _PRESET_DEFAULT
 

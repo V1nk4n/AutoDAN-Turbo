@@ -1,9 +1,0 @@
-FROM ./harmbench-mistral-7b-q8_0.gguf
-TEMPLATE """[INST] <<SYS>>
-{{ .System }}
-<</SYS>>
-
-{{ .Prompt }} [/INST]
-"""
-PARAMETER temperature 0.0
-PARAMETER top_p 0.9

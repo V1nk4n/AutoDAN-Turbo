@@ -1,0 +1,13 @@
+{# microsoft/phi-1_5: completion model — blank line between Instruct block and Output (HF convention). #}
+{%- for message in messages %}
+{%- if message['role'] == 'user' %}
+Instruct: {{ message['content'] }}
+
+{% elif message['role'] == 'assistant' %}
+Output: {{ message['content'] }}
+
+{% endif %}
+{%- endfor %}
+{% if add_generation_prompt %}
+Output:
+{%- endif %}

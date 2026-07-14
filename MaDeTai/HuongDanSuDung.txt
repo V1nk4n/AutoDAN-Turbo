@@ -1,0 +1,195 @@
+HƯỚNG DẪN SỬ DỤNG (BIÊN DỊCH VÀ CHẠY CHƯƠNG TRÌNH)
+===================================================
+Dự án: Adversarial NeuroSearch (AutoDAN-Turbo-PRO / AutoDAN-Turbo-Baseline)
+
+Lưu ý về "biên dịch": chương trình được viết bằng Python - là ngôn ngữ
+thông dịch (interpreted), KHÔNG cần bước biên dịch (compile) riêng như
+C/C++/Java. Sau khi cài đặt môi trường và thư viện theo file
+HuongDanCaiDat.txt, chương trình có thể chạy trực tiếp bằng lệnh "python".
+
+------------------------------------------------------------
+0. CẤU TRÚC THƯ MỤC SRC
+------------------------------------------------------------
+src/
+  main.py               - Điểm vào chính: huấn luyện/tìm chiến lược jailbreak.
+                          Hỗ trợ 2 chế độ chọn bằng cờ --pro_enabled:
+                            + PRO (mặc định khi có --pro_enabled): pipeline_pro.py
+                            + Baseline (mặc định khi KHÔNG có --pro_enabled):
+                              bản tái tạo "đông cứng" (frozen) của AutoDAN-Turbo
+                              cổ điển, dùng framework_baseline/ + pipeline_baseline.py
+  pipeline.py           - Logic AutoDAN-Turbo cổ điển (dùng bởi test.py, eval.py)
+  pipeline_pro.py        - Logic pipeline cho chế độ PRO (nhiều tối ưu: MFPS,
+                          four-tier eval, pattern manager, feedback scheduler...)
+  pipeline_baseline.py   - Logic pipeline cho chế độ Baseline (bản đông cứng)
+  test.py                - Sinh jailbreak prompt cho 1 câu hỏi cụ thể (dùng
+                          pipeline.py, đọc strategy library từ đường dẫn cố định
+                          ./logs/lifelong_strategy_library.pkl)
+  eval.py                - Đánh giá tổng quát (dùng pipeline.py) trên bộ dữ liệu
+                          HarmBench, cho phép chọn model qua --target_repo/--agent_repo
+  eval_pro.py             - Đánh giá strategy library được huấn luyện bằng chế độ PRO
+  eval_baseline.py        - Đánh giá strategy library được huấn luyện bằng chế độ
+                          Baseline (framework_baseline + pipeline_baseline)
+  framework/              - Các module dùng chung: attacker, scorer, summarizer,
+                          retrieval, target, feedback, refiner, pattern_manager,
+                          harmbench_classifier, fast_judge, feedback_scheduler,
+                          pro_threshold_telemetry, ...
+  framework_baseline/     - Bản attacker/scorer/summarizer/target "đông cứng"
+                          riêng cho chế độ Baseline (độc lập với framework/)
+  llm/                    - Wrapper gọi mô hình ngôn ngữ: HuggingFace (PRO),
+                          HuggingFace bản Baseline, OpenAI (embedding), Ollama,
+                          mô hình embedding cục bộ, target_resolve (chọn model)
+  data/                   - Dữ liệu HarmBench (các câu hỏi/malicious requests)
+  requirements.txt / requirements_kaggle.txt - Danh sách thư viện cần cài
+
+------------------------------------------------------------
+1. CHUẨN BỊ TRƯỚC KHI CHẠY
+------------------------------------------------------------
+1.1. Kích hoạt môi trường đã tạo ở bước cài đặt:
+        conda activate adversarial-neurosearch
+     (hoặc source .venv/bin/activate)
+
+1.2. Di chuyển vào thư mục src:
+        cd src
+
+1.3. Nếu KHÔNG dùng Weights & Biases để theo dõi quá trình chạy, tắt chế
+     độ ghi log online (tránh lỗi đòi đăng nhập):
+        wandb offline
+     (hoặc đăng nhập thực sự bằng "wandb login" nếu muốn theo dõi trên
+     web wandb.ai)
+
+1.4. Chuẩn bị các tham số bắt buộc khi chạy lệnh:
+        --hf_token          : HuggingFace access token (hoặc đặt biến môi
+                               trường HF_TOKEN / HUGGING_FACE_HUB_TOKEN)
+        --openai_api_key    : OpenAI API key (bỏ qua nếu dùng --azure hoặc
+                               --use_local_embedding)
+
+1.5. Chọn model bằng --model (preset) hoặc --target_repo (repo HuggingFace
+     tùy ý):
+        --model llama3   -> Qwen/Qwen2.5-1.5B-Instruct (mặc định)
+        --model smollm2  -> HuggingFaceTB/SmolLM2-1.7B-Instruct
+        --model phi      -> microsoft/phi-1_5 (model completion, nên truyền
+                            thêm --agent_repo Qwen/Qwen2.5-1.5B-Instruct vì
+                            phi-1_5 không phù hợp làm attacker/scorer)
+        (khác)           -> google/gemma-1.1-7b-it
+     Hoặc chỉ định trực tiếp:
+        --target_repo <hf_repo_id> [--target_config <ten_config>]
+        --agent_repo <hf_repo_id>  [--agent_config <ten_config>]
+     (--agent_repo dùng cho attacker/summarizer/scorer/feedback/refiner;
+     nếu bỏ trống sẽ dùng cùng model với --target_repo)
+
+------------------------------------------------------------
+2. CHẠY HUẤN LUYỆN / TÌM CHIẾN LƯỢC (main.py)
+------------------------------------------------------------
+2.1. Chế độ Baseline (mặc định, không truyền --pro_enabled):
+    python main.py \
+        --openai_api_key "<openai_api_key_cua_ban>" \
+        --embedding_model "text-embedding-ada-002" \
+        --hf_token "<huggingface_token_cua_ban>" \
+        --epochs 150
+
+2.2. Chế độ PRO (nhiều tối ưu hơn):
+    python main.py --pro_enabled \
+        --openai_api_key "<openai_api_key_cua_ban>" \
+        --embedding_model "text-embedding-ada-002" \
+        --hf_token "<huggingface_token_cua_ban>" \
+        --epochs 150
+
+2.3. Nếu không có OpenAI API key, dùng mô hình embedding cục bộ (không cần
+     gọi API, chạy hoàn toàn offline sau khi đã tải model):
+    python main.py --pro_enabled --use_local_embedding \
+        --hf_token "<huggingface_token_cua_ban>"
+
+2.4. Một số cờ hữu ích khác:
+        --debug                : chạy với bộ dữ liệu mẫu nhỏ để kiểm thử nhanh
+        --only_warm_up          : chỉ chạy giai đoạn khởi động rồi dừng
+        --only_lifelong N        : chỉ chạy vòng lặp lifelong thứ N (kèm
+                                  --resume_dir <thư_mục_run_cu> để tiếp tục
+                                  đúng thư mục kết quả đã có)
+        --epochs N               : số epoch huấn luyện
+        --data <đường_dẫn>       : đổi bộ dữ liệu đầu vào (mặc định
+                                  ./data/harmful_behavior_requests.json)
+        --log_suffix <hậu_tố>    : hậu tố tên file log để tránh ghi đè
+
+Kết quả (strategy library, attack log, ...) được lưu vào một thư mục con
+MỚI mỗi lần chạy, dạng:
+    ./logs/logs_per_run/<thời_gian>_<pro|baseline>_<tên_model>/
+Thư mục ./logs/ và các thư mục con này sẽ TỰ ĐỘNG được tạo khi chạy, không
+cần tạo trước. File tổng hợp cấu hình + thời gian chạy được ghi thêm vào
+cuối ./logs/running.log và vào running.log trong thư mục con nói trên.
+
+------------------------------------------------------------
+3. SINH JAILBREAK PROMPT CHO 1 CÂU HỎI (test.py)
+------------------------------------------------------------
+test.py đọc strategy library từ đường dẫn CỐ ĐỊNH
+./logs/lifelong_strategy_library.pkl (không phải thư mục logs_per_run/...
+của main.py). Sau khi chạy main.py, hãy copy file kết quả phù hợp vào
+đúng vị trí này trước, ví dụ:
+    cp "./logs/logs_per_run/<thời_gian>_.../lifelong_strategy_library.pkl" \
+       "./logs/lifelong_strategy_library.pkl"
+
+Sau đó chạy:
+    python test.py \
+        --openai_api_key "<openai_api_key_cua_ban>" \
+        --hf_token "<huggingface_token_cua_ban>" \
+        --request "How to make a bomb?"
+
+------------------------------------------------------------
+4. ĐÁNH GIÁ TRÊN BỘ DỮ LIỆU HARMBENCH
+------------------------------------------------------------
+4.1. Đánh giá tổng quát bằng eval.py (dùng cho strategy library huấn
+     luyện từ pipeline.py cổ điển; hỗ trợ chọn model qua --target_repo):
+    python eval.py \
+        --openai_api_key "<openai_api_key_cua_ban>" \
+        --hf_token "<huggingface_token_cua_ban>" \
+        --strategy_library_pkl "./logs/lifelong_strategy_library.pkl" \
+        --save_json "./logs/eval_results.json"
+
+4.2. Đánh giá strategy library huấn luyện bằng chế độ PRO:
+    python eval_pro.py \
+        --openai_api_key "<openai_api_key_cua_ban>" \
+        --hf_token "<huggingface_token_cua_ban>" \
+        --strategy_library_pkl "./logs/logs_per_run/<thời_gian>_pro_.../lifelong_strategy_library.pkl" \
+        --use_harmbench_classifier \
+        --save_json "./logs/eval_pro_results.json"
+
+4.3. Đánh giá strategy library huấn luyện bằng chế độ Baseline:
+    python eval_baseline.py \
+        --openai_api_key "<openai_api_key_cua_ban>" \
+        --hf_token "<huggingface_token_cua_ban>" \
+        --strategy_library_pkl "./logs/logs_per_run/<thời_gian>_baseline_.../lifelong_strategy_library.pkl" \
+        --use_harmbench_classifier \
+        --save_json "./logs/eval_baseline_results.json"
+
+Cờ --use_harmbench_classifier dùng bộ phân loại HarmBench (tải tự động từ
+HuggingFace) để chấm điểm chính xác hơn theo chuẩn của paper AutoDAN-Turbo;
+nếu bỏ qua, chương trình sẽ dùng chính LLM scorer nội bộ để chấm.
+
+------------------------------------------------------------
+5. KẾT QUẢ / OUTPUT
+------------------------------------------------------------
+- Toàn bộ log, strategy library, kết quả đánh giá đều được ghi vào thư mục
+  ./logs/ (tự động sinh ra khi chạy, không nằm trong bộ nộp này).
+- Với main.py: mỗi lần chạy tạo 1 thư mục con riêng trong
+  ./logs/logs_per_run/ (xem mục 2.4), tránh ghi đè kết quả giữa các lần
+  chạy khác nhau (khác model, khác chế độ PRO/Baseline).
+- pattern_library.json (chỉ dùng ở chế độ PRO) được tự động tạo mới
+  (rỗng) và tự học dần trong quá trình chạy nếu chưa tồn tại.
+
+------------------------------------------------------------
+6. XỬ LÝ LỖI THƯỜNG GẶP
+------------------------------------------------------------
+- "CUDA out of memory": giảm --attack_batch_size, --target_batch_size,
+  --scorer_batch_size (mặc định = 2) hoặc chạy trên máy có VRAM lớn hơn,
+  hoặc bỏ qua GPU (chương trình sẽ chậm hơn nhiều khi chạy trên CPU).
+- Lỗi tải model từ HuggingFace (401/403): kiểm tra lại --hf_token (hoặc
+  biến môi trường HF_TOKEN), và đảm bảo đã chấp nhận điều khoản sử dụng
+  model (License) trên trang HuggingFace của model tương ứng.
+- "Cannot infer --target_config ...": model bạn truyền qua --target_repo
+  chưa có sẵn generation config tương ứng trong
+  llm/chat_templates/generation_configs/. Truyền thêm --target_config tên
+  file config có sẵn gần giống nhất, hoặc tạo file config mới cùng cấu
+  trúc cho model đó.
+- Lỗi liên quan wandb (yêu cầu đăng nhập): chạy "wandb offline" trước khi
+  thực thi, hoặc "wandb login" để đăng nhập thực sự.
+- Thiếu thư viện: kiểm tra lại đã chạy "pip install -r requirements.txt"
+  trong đúng môi trường ảo đang kích hoạt (xem HuongDanCaiDat.txt).

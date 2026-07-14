@@ -1,0 +1,100 @@
+HƯỚNG DẪN CÀI ĐẶT
+==================
+Dự án: Adversarial NeuroSearch (AutoDAN-Turbo-PRO / AutoDAN-Turbo-Baseline)
+Ngôn ngữ: Python
+
+------------------------------------------------------------
+1. YÊU CẦU HỆ THỐNG
+------------------------------------------------------------
+- Hệ điều hành: Linux / Windows / macOS (khuyến nghị Linux/Ubuntu 20.04+).
+- Python: phiên bản 3.12 (dự án được phát triển và kiểm thử trên Python 3.12).
+- GPU: khuyến nghị có GPU NVIDIA hỗ trợ CUDA (>= 8GB VRAM) vì chương trình
+  tải và chạy các mô hình ngôn ngữ (LLM) qua thư viện transformers, có sử
+  dụng kỹ thuật lượng tử hóa 4-bit (bitsandbytes) để giảm VRAM. Vẫn có thể
+  chạy trên CPU nhưng tốc độ sẽ rất chậm.
+- Nếu dùng GPU: cần cài đặt trước NVIDIA Driver + CUDA Toolkit tương thích
+  với phiên bản PyTorch sẽ được cài ở bước 3.
+- Dung lượng ổ trống: ít nhất ~15GB (dành cho model checkpoint tải về từ
+  HuggingFace Hub trong lần chạy đầu tiên; nhiều hơn nếu chạy song song
+  nhiều model preset khác nhau: Qwen2.5-1.5B-Instruct, SmolLM2-1.7B-Instruct,
+  microsoft/phi-1_5, gemma-1.1-7b-it, Qwen3-0.6B, ...).
+- Kết nối Internet: cần thiết trong lần chạy đầu để tải model từ HuggingFace
+  Hub và để gọi API (OpenAI/Azure OpenAI) cho phần embedding.
+
+------------------------------------------------------------
+2. CÔNG CỤ / MÔI TRƯỜNG PHÁT TRIỂN
+------------------------------------------------------------
+- Python 3.12: https://www.python.org/downloads/
+- pip (có sẵn cùng Python) hoặc Anaconda/Miniconda (khuyến nghị):
+  https://docs.conda.io/en/latest/miniconda.html
+- Git (không bắt buộc, chỉ cần khi muốn tải lại code từ repo gốc).
+- IDE để đọc/sửa code: Visual Studio Code, PyCharm, hoặc Cursor (không bắt
+  buộc, chỉ phục vụ quá trình phát triển).
+- Tài khoản/dịch vụ bên ngoài cần chuẩn bị trước khi chạy:
+  + Tài khoản HuggingFace (https://huggingface.co) và một Access Token
+    (dùng để tải model gated/private, xem tại mục Settings > Access Tokens).
+    Có thể truyền qua --hf_token hoặc đặt biến môi trường HF_TOKEN /
+    HUGGING_FACE_HUB_TOKEN.
+  + API key của OpenAI (https://platform.openai.com) HOẶC Azure OpenAI,
+    dùng cho mô hình embedding văn bản (text-embedding-ada-002 hoặc tương
+    đương). Nếu không có, có thể dùng cờ "--use_local_embedding" để dùng
+    mô hình embedding cục bộ (sentence-transformers) thay thế, không cần API.
+  + (Tùy chọn) Tài khoản Weights & Biases (https://wandb.ai) để theo dõi
+    quá trình huấn luyện. Nếu không muốn dùng, chạy lệnh:
+        wandb offline
+    trước khi thực thi chương trình, hoặc đăng nhập bằng:
+        wandb login
+
+------------------------------------------------------------
+3. CÀI ĐẶT THƯ VIỆN (KHÔNG ĐÍNH KÈM THƯ VIỆN TRONG BỘ NỘP)
+------------------------------------------------------------
+Thư mục nộp KHÔNG bao gồm các thư viện/gói phụ thuộc. Danh sách thư viện
+cần thiết đã được khai báo sẵn trong file requirements tại thư mục src/.
+Thực hiện các bước sau để cài đặt:
+
+  Bước 1: Tạo môi trường ảo (khuyến nghị dùng conda)
+        conda create -n adversarial-neurosearch python=3.12
+        conda activate adversarial-neurosearch
+
+      (Hoặc dùng venv có sẵn trong Python)
+        python3.12 -m venv .venv
+        source .venv/bin/activate        (Linux/macOS)
+        .venv\Scripts\activate           (Windows)
+
+  Bước 2: Cài đặt thư viện từ file requirements.txt (di chuyển vào thư mục
+  src/ trước khi chạy)
+        cd src
+        pip install -r requirements.txt
+
+      Ghi chú: nếu chạy trên môi trường có GPU mạnh / Kaggle và muốn dùng
+      vLLM để tăng tốc suy luận, có thể cài đặt theo file thay thế:
+        pip install -r requirements_kaggle.txt
+
+  Bước 3: Kiểm tra cài đặt thành công
+        python -c "import torch, transformers; print(torch.__version__, transformers.__version__)"
+
+Danh sách thư viện chính sẽ được cài đặt (trích từ requirements.txt):
+  torchvision, transformers, sentence-transformers, accelerate, pandas,
+  openai, anthropic, mistralai, google-generativeai, matplotlib, faiss-cpu,
+  bitsandbytes, wandb, datasets, huggingface_hub, requests, ...
+(Xem đầy đủ và chính xác phiên bản trong file src/requirements.txt)
+
+------------------------------------------------------------
+4. DỮ LIỆU ĐẦU VÀO
+------------------------------------------------------------
+Bộ dữ liệu HarmBench cần thiết để chạy chương trình đã được đính kèm sẵn
+trong thư mục src/data/ (harmful_behavior_requests.json,
+harmbench_eval.json). Không cần tải thêm gì khác.
+
+------------------------------------------------------------
+5. LƯU Ý
+------------------------------------------------------------
+- Các model ngôn ngữ (Qwen2.5-1.5B-Instruct, Qwen3-0.6B, SmolLM2-1.7B-Instruct,
+  microsoft/phi-1_5, gemma-1.1-7b-it, ...) sẽ được thư viện HuggingFace tự
+  động tải về từ Internet trong lần chạy đầu tiên và lưu cache tại thư mục
+  mặc định của HuggingFace (~/.cache/huggingface) cũng như tại
+  src/llm/chat_templates/model_ckpt/.
+- Chương trình hỗ trợ chọn model tùy ý qua --target_repo (bất kỳ repo
+  HuggingFace nào), miễn là có sẵn (hoặc tự thêm) file cấu hình sinh văn
+  bản tương ứng trong src/llm/chat_templates/generation_configs/.
+- Xem chi tiết cách chạy chương trình trong file HuongDanSuDung.txt.

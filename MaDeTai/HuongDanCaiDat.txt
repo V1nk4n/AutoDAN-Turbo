@@ -1,6 +1,6 @@
 HƯỚNG DẪN CÀI ĐẶT
 ==================
-Dự án: Adversarial NeuroSearch (AutoDAN-Turbo-PRO / AutoDAN-Turbo-Baseline)
+Adversarial NeuroSearch (với AutoDAN-Turbo-Baseline)
 Ngôn ngữ: Python
 
 ------------------------------------------------------------
@@ -27,15 +27,12 @@ Ngôn ngữ: Python
 - Python 3.12: https://www.python.org/downloads/
 - pip (có sẵn cùng Python) hoặc Anaconda/Miniconda (khuyến nghị):
   https://docs.conda.io/en/latest/miniconda.html
-- Git (không bắt buộc, chỉ cần khi muốn tải lại code từ repo gốc).
-- IDE để đọc/sửa code: Visual Studio Code, PyCharm, hoặc Cursor (không bắt
-  buộc, chỉ phục vụ quá trình phát triển).
 - Tài khoản/dịch vụ bên ngoài cần chuẩn bị trước khi chạy:
   + Tài khoản HuggingFace (https://huggingface.co) và một Access Token
     (dùng để tải model gated/private, xem tại mục Settings > Access Tokens).
     Có thể truyền qua --hf_token hoặc đặt biến môi trường HF_TOKEN /
     HUGGING_FACE_HUB_TOKEN.
-  + API key của OpenAI (https://platform.openai.com) HOẶC Azure OpenAI,
+  + API key của OpenAI (https://platform.openai.com) HOẶC Azure OpenAI, 
     dùng cho mô hình embedding văn bản (text-embedding-ada-002 hoặc tương
     đương). Nếu không có, có thể dùng cờ "--use_local_embedding" để dùng
     mô hình embedding cục bộ (sentence-transformers) thay thế, không cần API.
@@ -46,9 +43,9 @@ Ngôn ngữ: Python
         wandb login
 
 ------------------------------------------------------------
-3. CÀI ĐẶT THƯ VIỆN (KHÔNG ĐÍNH KÈM THƯ VIỆN TRONG BỘ NỘP)
+3. CÀI ĐẶT THƯ VIỆN 
 ------------------------------------------------------------
-Thư mục nộp KHÔNG bao gồm các thư viện/gói phụ thuộc. Danh sách thư viện
+Danh sách thư viện
 cần thiết đã được khai báo sẵn trong file requirements tại thư mục src/.
 Thực hiện các bước sau để cài đặt:
 
@@ -61,9 +58,7 @@ Thực hiện các bước sau để cài đặt:
         source .venv/bin/activate        (Linux/macOS)
         .venv\Scripts\activate           (Windows)
 
-  Bước 2: Cài đặt thư viện từ file requirements.txt (di chuyển vào thư mục
-  src/ trước khi chạy)
-        cd src
+  Bước 2: Cài đặt thư viện từ file requirements.txt
         pip install -r requirements.txt
 
       Ghi chú: nếu chạy trên môi trường có GPU mạnh / Kaggle và muốn dùng

@@ -1,17 +1,16 @@
 HƯỚNG DẪN SỬ DỤNG (BIÊN DỊCH VÀ CHẠY CHƯƠNG TRÌNH)
 ===================================================
-Dự án: Adversarial NeuroSearch (AutoDAN-Turbo-PRO / AutoDAN-Turbo-Baseline)
+Adversarial NeuroSearch (với AutoDAN-Turbo-Baseline)
 
-Lưu ý về "biên dịch": chương trình được viết bằng Python - là ngôn ngữ
-thông dịch (interpreted), KHÔNG cần bước biên dịch (compile) riêng như
-C/C++/Java. Sau khi cài đặt môi trường và thư viện theo file
+Sau khi cài đặt môi trường và thư viện theo file
 HuongDanCaiDat.txt, chương trình có thể chạy trực tiếp bằng lệnh "python".
+Lưu ý: các file mã nguồn/ lệnh/ cờ có keyword "pro" là liên quan đến phương pháp cải tiến (Adversarial NeuroSearch)
 
 ------------------------------------------------------------
 0. CẤU TRÚC THƯ MỤC SRC
 ------------------------------------------------------------
 src/
-  main.py               - Điểm vào chính: huấn luyện/tìm chiến lược jailbreak.
+  main.py               - Huấn luyện/tìm chiến lược jailbreak.
                           Hỗ trợ 2 chế độ chọn bằng cờ --pro_enabled:
                             + PRO (mặc định khi có --pro_enabled): pipeline_pro.py
                             + Baseline (mặc định khi KHÔNG có --pro_enabled):
@@ -80,11 +79,18 @@ src/
 ------------------------------------------------------------
 2. CHẠY HUẤN LUYỆN / TÌM CHIẾN LƯỢC (main.py)
 ------------------------------------------------------------
+Lưu ý: Nếu không truyền --model/--target_repo, mặc định dùng "llama3" =
+Qwen/Qwen2.5-1.5B-Instruct. Để chỉ định model khác, thêm:
+    --target_repo <hf_repo_id> [--target_config <ten_config>]
+    --agent_repo  <hf_repo_id> [--agent_config  <ten_config>]
+hoặc dùng preset: --model llama3 | smollm2 | phi
+
 2.1. Chế độ Baseline (mặc định, không truyền --pro_enabled):
     python main.py \
         --openai_api_key "<openai_api_key_cua_ban>" \
         --embedding_model "text-embedding-ada-002" \
         --hf_token "<huggingface_token_cua_ban>" \
+        --target_repo "<hf_repo_id_target>" \
         --epochs 150
 
 2.2. Chế độ PRO (nhiều tối ưu hơn):
@@ -92,12 +98,14 @@ src/
         --openai_api_key "<openai_api_key_cua_ban>" \
         --embedding_model "text-embedding-ada-002" \
         --hf_token "<huggingface_token_cua_ban>" \
+        --target_repo "<hf_repo_id_target>" \
         --epochs 150
 
 2.3. Nếu không có OpenAI API key, dùng mô hình embedding cục bộ (không cần
      gọi API, chạy hoàn toàn offline sau khi đã tải model):
     python main.py --pro_enabled --use_local_embedding \
-        --hf_token "<huggingface_token_cua_ban>"
+        --hf_token "<huggingface_token_cua_ban>" \
+        --target_repo "<hf_repo_id_target>"
 
 2.4. Một số cờ hữu ích khác:
         --debug                : chạy với bộ dữ liệu mẫu nhỏ để kiểm thử nhanh
@@ -127,20 +135,34 @@ của main.py). Sau khi chạy main.py, hãy copy file kết quả phù hợp v�
     cp "./logs/logs_per_run/<thời_gian>_.../lifelong_strategy_library.pkl" \
        "./logs/lifelong_strategy_library.pkl"
 
+Lưu ý: test.py KHÔNG hỗ trợ --target_repo/--agent_repo; chỉ dùng được cờ
+--model để chọn preset model (llama3/smollm2/phi/khác). Mặc định là "llama3"
+(Qwen2.5-1.5B-Instruct).
+
 Sau đó chạy:
     python test.py \
         --openai_api_key "<openai_api_key_cua_ban>" \
         --hf_token "<huggingface_token_cua_ban>" \
+        --model llama3 \
         --request "How to make a bomb?"
 
 ------------------------------------------------------------
 4. ĐÁNH GIÁ TRÊN BỘ DỮ LIỆU HARMBENCH
 ------------------------------------------------------------
+Lưu ý chung cho mục 4: Nếu không truyền --target_repo/--agent_repo,
+chương trình dùng preset mặc định theo --model (mặc định: "llama3" =
+Qwen2.5-1.5B-Instruct). Để đánh giá trên model khác, truyền thêm:
+    --target_repo <hf_repo_id> [--target_config <ten_config>]
+    --agent_repo  <hf_repo_id> [--agent_config  <ten_config>]
+(--agent_repo có thể bỏ qua; khi đó attacker/scorer dùng chung target model)
+
 4.1. Đánh giá tổng quát bằng eval.py (dùng cho strategy library huấn
      luyện từ pipeline.py cổ điển; hỗ trợ chọn model qua --target_repo):
     python eval.py \
         --openai_api_key "<openai_api_key_cua_ban>" \
         --hf_token "<huggingface_token_cua_ban>" \
+        --target_repo "<hf_repo_id_target>" \
+        --agent_repo  "<hf_repo_id_agent>" \
         --strategy_library_pkl "./logs/lifelong_strategy_library.pkl" \
         --save_json "./logs/eval_results.json"
 
@@ -148,6 +170,8 @@ Sau đó chạy:
     python eval_pro.py \
         --openai_api_key "<openai_api_key_cua_ban>" \
         --hf_token "<huggingface_token_cua_ban>" \
+        --target_repo "<hf_repo_id_target>" \
+        --agent_repo  "<hf_repo_id_agent>" \
         --strategy_library_pkl "./logs/logs_per_run/<thời_gian>_pro_.../lifelong_strategy_library.pkl" \
         --use_harmbench_classifier \
         --save_json "./logs/eval_pro_results.json"
@@ -156,6 +180,8 @@ Sau đó chạy:
     python eval_baseline.py \
         --openai_api_key "<openai_api_key_cua_ban>" \
         --hf_token "<huggingface_token_cua_ban>" \
+        --target_repo "<hf_repo_id_target>" \
+        --agent_repo  "<hf_repo_id_agent>" \
         --strategy_library_pkl "./logs/logs_per_run/<thời_gian>_baseline_.../lifelong_strategy_library.pkl" \
         --use_harmbench_classifier \
         --save_json "./logs/eval_baseline_results.json"

@@ -128,7 +128,7 @@ def config():
     config.add_argument("--mfps_alpha1", type=float, default=0.5, help="Keep ratio after MFPS stage F1")
     config.add_argument("--mfps_short_max_new_tokens", type=int, default=32, help="Short decode max_new_tokens in MFPS F1")
     config.add_argument("--mfps_min_candidates_f2", type=int, default=1, help="Minimum candidates entering MFPS F2")
-    config.add_argument("--mfps_uncertainty_band", type=float, default=0.1, help="Uncertainty band for MFPS decisions")
+    config.add_argument("--mfps_uncertainty_band", type=float, default=0.1, help="Floor for MFPS uncertainty_gate: effective_gate=max(band, profile_gate)")
     config.add_argument("--mfps_eval_budget_ms", type=float, default=0.0, help="Per-request MFPS eval budget in ms (0=unlimited)")
     config.add_argument("--mfps_w_f0", type=float, default=0.35, help="Weight of F0 score in MFPS composite score")
     config.add_argument("--mfps_w_f1", type=float, default=0.65, help="Weight of F1 score in MFPS composite score")

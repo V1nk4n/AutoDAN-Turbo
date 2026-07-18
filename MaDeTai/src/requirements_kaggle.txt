@@ -1,6 +1,6 @@
 torch
 vllm>=0.3.0
-transformers
+transformers>=5.5.3
 sentence-transformers<4.0.0
 accelerate
 bitsandbytes

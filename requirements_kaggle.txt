@@ -1,6 +1,6 @@
 vllm>=0.3.0
 transformers
-sentence_transformers
+sentence-transformers<4.0.0
 accelerate
 datasketch
 pandas

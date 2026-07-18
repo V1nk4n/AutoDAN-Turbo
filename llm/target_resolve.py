@@ -11,10 +11,8 @@ _PRESET_SMOLLM2 = (
     "SmolLM2-1.7B-Instruct",
 )
 _PRESET_DEFAULT = ("google/gemma-1.1-7b-it", "gemma-it")
-<<<<<<< HEAD
 _PRESET_PHI15 = ("microsoft/phi-1_5", "phi-1_5")
 _PHI_PRESETS = {"phi", "phi15", "phi-1.5", "phi-1_5", "phi1.5"}
-=======
 _HF_TOKEN_PLACEHOLDER = "your_hf_token"
 
 
@@ -27,7 +25,6 @@ def resolve_hf_token(token: Optional[str] = None) -> Optional[str]:
         if env_val and env_val.strip():
             return env_val.strip()
     return None
->>>>>>> origin/dev-time-improve-strategy
 
 
 def list_generation_configs(config_dir: str) -> list[str]:

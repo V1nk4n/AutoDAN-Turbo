@@ -1,6 +1,5 @@
 import logging
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
 
 class LocalEmbeddingModel:
@@ -37,6 +36,14 @@ class LocalEmbeddingModel:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         
         self.device = device
+        try:
+            from sentence_transformers import SentenceTransformer
+        except Exception as e:
+            raise RuntimeError(
+                f"sentence-transformers could not be imported: {e}\n"
+                "On Kaggle/environments with sentence-transformers>=4.0, "
+                "install a compatible version: pip install 'sentence-transformers<4.0'"
+            ) from e
         self.model = SentenceTransformer(model_name, device=device)
         
         if self.logger:

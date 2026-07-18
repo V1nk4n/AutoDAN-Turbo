@@ -1,7 +1,7 @@
 {
   "temperature": 0.7,
-<<<<<<< HEAD
-  "top_p": 0.9,
+  "top_p": 0.95,
+  "top_k": 64,
   "max_new_tokens": 512,
   "repetition_penalty": 1.1,
   "no_repeat_ngram_size": 3,
@@ -13,12 +13,4 @@
     "<|im_end|>",
     "<|im_start|>"
   ]
-=======
-  "top_p": 0.95,
-  "top_k": 64,
-  "max_new_tokens": 512,
-  "repetition_penalty": 1.1,
-  "no_repeat_ngram_size": 3,
-  "system_prompt": "You are a helpful assistant."
->>>>>>> origin/dev-time-improve-strategy
 }

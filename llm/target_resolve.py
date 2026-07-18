@@ -10,9 +10,14 @@ _PRESET_SMOLLM2 = (
     "HuggingFaceTB/SmolLM2-1.7B-Instruct",
     "SmolLM2-1.7B-Instruct",
 )
+_PRESET_SMOLLM2_360M = (
+    "HuggingFaceTB/SmolLM2-360M-Instruct",
+    "SmolLM2-360M-Instruct",
+)
 _PRESET_DEFAULT = ("google/gemma-1.1-7b-it", "gemma-it")
 _PRESET_PHI15 = ("microsoft/phi-1_5", "phi-1_5")
 _PHI_PRESETS = {"phi", "phi15", "phi-1.5", "phi-1_5", "phi1.5"}
+_SMOLLM2_360M_PRESETS = {"smollm2-360m", "smollm2_360m", "smol360", "smollm2-360"}
 _HF_TOKEN_PLACEHOLDER = "your_hf_token"
 
 
@@ -66,6 +71,8 @@ def resolve_target_model(
                     f"Pass --target_config explicitly. "
                     f"Available: {', '.join(available)}"
                 )
+    elif (model_preset or "").strip().lower() in _SMOLLM2_360M_PRESETS:
+        repo_name, config_name = _PRESET_SMOLLM2_360M
     elif model_preset.lower() == "smollm2":
         repo_name, config_name = _PRESET_SMOLLM2
     elif model_preset == "llama3":

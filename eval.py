@@ -180,15 +180,12 @@ if __name__ == "__main__":
         config_dir=config_dir,
     )
     logger.info("Target model: %s (generation_config=%s)", repo_name, config_name)
-<<<<<<< HEAD
     if "phi-1_5" in repo_name.lower() and not args.agent_repo:
         logger.warning(
             "microsoft/phi-1_5 is a completion model; without --agent_repo, "
             "attacker/scorer also use phi and quality will be poor. "
             "Recommended: --agent_repo Qwen/Qwen2.5-1.5B-Instruct"
         )
-=======
->>>>>>> origin/dev-time-improve-strategy
 
     target_model = HuggingFaceModel(repo_name, config_dir, config_name, hf_token)
 

@@ -298,32 +298,66 @@ class Attacker():
     def generate_goat_batch(
         self,
         request: str,
-        top_strategies: list,
+        top_strategies: list = None,
         n: int = 4,
         improved_variable: str = "",
         prior_attempt_prompt: str = "",
         prior_attempt_response: str = "",
+        strategy_sets: list = None,
         **kwargs,
     ):
-        condition, system, user = self._build_single_turn_goat_messages(
-            request=request,
-            top_strategies=top_strategies,
-            improved_variable=improved_variable,
-            prior_attempt_prompt=prior_attempt_prompt,
-            prior_attempt_response=prior_attempt_response,
-        )
+        """Generate n GOAT jailbreak candidates.
+
+        If ``strategy_sets`` is provided (list of strategy lists, one per candidate),
+        each candidate is conditioned on its own set (shared exploit + different explore).
+        Otherwise all n candidates share ``top_strategies``.
+        """
+        if strategy_sets:
+            n = max(1, len(strategy_sets))
+            conditions, systems, users = [], [], []
+            for sset in strategy_sets:
+                condition, system, user = self._build_single_turn_goat_messages(
+                    request=request,
+                    top_strategies=sset or [],
+                    improved_variable=improved_variable,
+                    prior_attempt_prompt=prior_attempt_prompt,
+                    prior_attempt_response=prior_attempt_response,
+                )
+                conditions.append(condition)
+                systems.append(system)
+                users.append(user)
+        else:
+            top_strategies = top_strategies or []
+            condition, system, user = self._build_single_turn_goat_messages(
+                request=request,
+                top_strategies=top_strategies,
+                improved_variable=improved_variable,
+                prior_attempt_prompt=prior_attempt_prompt,
+                prior_attempt_response=prior_attempt_response,
+            )
+            conditions = [condition] * n
+            systems = [system] * n
+            users = [user] * n
 
         raws = self.model.conditional_generate_batch(
-            [condition] * n, [system] * n, [user] * n, **kwargs
+            conditions, systems, users, **kwargs
         )
 
         goat_items = []
         parse_failed = 0
-        for raw in raws:
+        for i, raw in enumerate(raws):
             obj = self._parse_goat_json(raw)
             if obj is None:
                 parse_failed += 1
                 continue
+            if strategy_sets and i < len(strategy_sets):
+                sset = strategy_sets[i] or []
+                obj["_strategy_set_ids"] = [
+                    str(s.get("strategy_id"))
+                    for s in sset
+                    if isinstance(s, dict) and s.get("strategy_id")
+                ]
+                obj["_strategy_set_index"] = i
             goat_items.append(obj)
 
         if not goat_items:
@@ -335,9 +369,10 @@ class Attacker():
             }]
 
         meta = {
-            "attacker_system": system,
+            "attacker_system": systems[0] if systems else "",
             "parse_failed": parse_failed,
             "generated_n": n,
             "valid_n": len(goat_items),
+            "per_candidate_strategy_sets": bool(strategy_sets),
         }
         return goat_items, meta

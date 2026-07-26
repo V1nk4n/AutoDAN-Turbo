@@ -723,6 +723,75 @@ class PatternManager:
             k,
         )
 
+    def select_top_k_dynamic_sets(
+        self,
+        request_text: str,
+        embed_fn: Callable[[str], Any],
+        target_model: str,
+        library_round: int,
+        *,
+        n_sets: int = 1,
+        k: int = 5,
+        exploit_n: int = 3,
+        explore_n: int = 2,
+        w_rate: float = S_RANK_W_RATE,
+        w_avg: float = S_RANK_W_AVG,
+        w_req: float = S_RANK_W_REQ,
+        seed: Optional[int] = None,
+    ) -> List[List[Dict[str, Any]]]:
+        """Return n strategy sets sharing the same exploit slots but different explore bags.
+
+        Prefer disjoint explore strategies across sets when the remainder pool is large enough;
+        otherwise allow overlap so every set still gets up to explore_n strategies.
+        """
+        n_sets = max(1, int(n_sets))
+        k = max(1, int(k))
+        exploit_n = max(0, min(int(exploit_n), k))
+        explore_n = max(0, min(int(explore_n), max(0, k - exploit_n)))
+        req = (request_text or "").strip()
+        goal_emb = embed_fn(req) if req else None
+        if goal_emb is None:
+            shared = self.select_top_k(target_model, library_round, k=k)
+            return [list(shared) for _ in range(n_sets)]
+
+        scored_rows = self._build_dynamic_scored_rows(
+            goal_emb, embed_fn, w_rate=w_rate, w_avg=w_avg, w_req=w_req
+        )
+        if not scored_rows:
+            return [[] for _ in range(n_sets)]
+
+        exploit_pick = scored_rows[:exploit_n]
+        exploit_sids = {sid for sid, *_ in exploit_pick}
+        remainder = [row for row in scored_rows if row[0] not in exploit_sids]
+
+        exploit_embs: List[Any] = []
+        for _sid, info, _, _, _, _ in exploit_pick:
+            ex_text = self._strategy_example_text(info)
+            emb = embed_fn(ex_text) if ex_text else None
+            if emb is not None:
+                exploit_embs.append(emb)
+
+        used_explore: set = set()
+        out_sets: List[List[Dict[str, Any]]] = []
+        master_rng = random.Random(seed) if seed is not None else random.Random()
+        for _i in range(n_sets):
+            preferred = [row for row in remainder if row[0] not in used_explore]
+            if len(preferred) < explore_n:
+                preferred = list(remainder)
+            rng = random.Random(master_rng.randrange(2**63))
+            explore_rows = self._sample_explore_rows(
+                preferred, exploit_embs, explore_n, embed_fn, rng
+            )
+            for sid, *_ in explore_rows:
+                used_explore.add(sid)
+            ordered = list(exploit_pick) + list(explore_rows)
+            out_sets.append(
+                self._ordered_rows_to_strategy_dicts(
+                    ordered, target_model, library_round, k
+                )
+            )
+        return out_sets
+
     def match_keywords(self, text: str) -> Optional[str]:
         if not text:
             return None

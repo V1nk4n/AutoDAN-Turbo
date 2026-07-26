@@ -25,3 +25,4 @@ bitsandbytes
 requests
 datasets
 huggingface_hub
+gradio>=4.0

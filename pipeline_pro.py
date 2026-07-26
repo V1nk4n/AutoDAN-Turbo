@@ -1705,18 +1705,20 @@ class AutoDANTurboPro():
             self.retrieval is not None
             and (self.pro_four_tier_eval or self.pro_dynamic_pattern_select)
         )
+        strategy_sets = None
         if self.pattern_manager:
             if use_dynamic:
 
                 def _embed_fn(text: str):
                     return self._embed_with_cache(text)
 
-                (top_strategies, elapsed_ms) = self._time_call(
-                    self.pattern_manager.select_top_k_dynamic,
+                (strategy_sets, elapsed_ms) = self._time_call(
+                    self.pattern_manager.select_top_k_dynamic_sets,
                     request,
                     _embed_fn,
                     self.target_model_key,
                     turn,
+                    n_sets=int(self.pro_n_candidates),
                     k=select_k,
                     exploit_n=int(self.pro_pattern_exploit_n),
                     explore_n=int(self.pro_pattern_explore_n),
@@ -1725,6 +1727,17 @@ class AutoDANTurboPro():
                     w_req=float(self.pro_pattern_rank_w_req),
                     seed=self.pro_pattern_explore_seed,
                 )
+                # Union across sets for trial logging / fallback attribution.
+                top_strategies = []
+                seen_sids = set()
+                for sset in strategy_sets or []:
+                    for s in sset:
+                        if not isinstance(s, dict):
+                            continue
+                        sid = s.get("strategy_id")
+                        if sid and sid not in seen_sids:
+                            seen_sids.add(sid)
+                            top_strategies.append(s)
             else:
                 (top_strategies, elapsed_ms) = self._time_call(
                     self.pattern_manager.select_top_k,
@@ -1753,6 +1766,21 @@ class AutoDANTurboPro():
                 }
                 for row in board:
                     row["selected"] = row.get("strategy_id") in selected
+                explore_sets_preview = []
+                for sset in strategy_sets or []:
+                    exploit_ids = [
+                        str(s.get("strategy_id"))
+                        for s in sset[: int(self.pro_pattern_exploit_n)]
+                        if isinstance(s, dict) and s.get("strategy_id")
+                    ]
+                    explore_ids = [
+                        str(s.get("strategy_id"))
+                        for s in sset[int(self.pro_pattern_exploit_n) :]
+                        if isinstance(s, dict) and s.get("strategy_id")
+                    ]
+                    explore_sets_preview.append(
+                        {"exploit_ids": exploit_ids, "explore_ids": explore_ids}
+                    )
                 self._log_threshold(
                     "pattern_rank",
                     w_rate=float(self.pro_pattern_rank_w_rate),
@@ -1761,6 +1789,8 @@ class AutoDANTurboPro():
                     n_library=len(board),
                     n_selected=len(selected),
                     selected_ids=sorted(selected),
+                    n_strategy_sets=len(strategy_sets or []),
+                    strategy_sets=explore_sets_preview,
                     rank_table=board[:48],
                 )
             except Exception as e:
@@ -1773,14 +1803,25 @@ class AutoDANTurboPro():
                 "target_model": self.target_model_key,
                 "k": select_k,
                 "dynamic": use_dynamic,
+                "n_sets": len(strategy_sets) if strategy_sets else 1,
                 "strategy_names": [s.get("Strategy", "") for s in top_strategies],
             },
             output_data={
                 "strategy_ids": [s.get("strategy_id") for s in top_strategies],
                 "count": len(top_strategies),
+                "per_set_explore_ids": [
+                    [
+                        str(s.get("strategy_id"))
+                        for s in (sset[int(self.pro_pattern_exploit_n) :] if sset else [])
+                        if isinstance(s, dict) and s.get("strategy_id")
+                    ]
+                    for sset in (strategy_sets or [])
+                ],
             },
         )
         credited_strategy_id = None
+        strategy_id = None
+        strategy_name_goat = ""
         (goat_output, elapsed_ms) = self._time_call(
             self.attacker.generate_goat_batch,
             request=request,
@@ -1789,6 +1830,7 @@ class AutoDANTurboPro():
             improved_variable=improved_variable,
             prior_attempt_prompt=getattr(self, "prior_attempt_prompt", "") or "",
             prior_attempt_response=getattr(self, "prior_attempt_response", "") or "",
+            strategy_sets=strategy_sets,
         )
         goat_items, _ = goat_output
         turn_time_by_stage["generate_candidates"] = elapsed_ms
@@ -1797,9 +1839,16 @@ class AutoDANTurboPro():
             turn=turn,
             stage="generate_candidates",
             duration_ms=elapsed_ms,
-            input_data={"history_len": len(history), "n_candidates": self.pro_n_candidates},
+            input_data={
+                "history_len": len(history),
+                "n_candidates": self.pro_n_candidates,
+                "per_candidate_strategy_sets": bool(strategy_sets),
+            },
             output_data={
                 "candidate_previews": [str(g.get("Response", ""))[:120] for g in goat_items],
+                "candidate_strategy_set_ids": [
+                    g.get("_strategy_set_ids", []) for g in goat_items
+                ],
             },
         )
         candidates = [g["Response"] for g in goat_items]
@@ -1962,6 +2011,10 @@ class AutoDANTurboPro():
                         strategy_id = sid
                         break
 
+            if strategy_id is None:
+                set_ids = goat.get("_strategy_set_ids") or []
+                if set_ids:
+                    strategy_id = set_ids[0]
             if strategy_id is None and top_strategies:
                 strategy_id = top_strategies[0].get("strategy_id")
 
@@ -2135,6 +2188,10 @@ class AutoDANTurboPro():
                 "time_by_stage_ms": {k: round(float(v), 1) for k, v in request_time_by_stage.items()},
                 "time_ms_attack": attack_ms,
                 "time_ms_feedback": feedback_ms,
+                "strategy_id": None,
+                "strategy_name": "",
+                "strategy_description": "",
+                "strategies_selected": [],
             }
         total_elapsed_ms = (time.perf_counter() - request_started) * 1000.0
         attack_ms, feedback_ms = self._split_attack_feedback_ms(request_time_by_stage)
@@ -2146,6 +2203,27 @@ class AutoDANTurboPro():
             feedback_ms=feedback_ms,
             **{f"step_{k}_ms": round(float(v), 1) for k, v in request_time_by_stage.items()},
         )
+        out_strategy_id = credited_strategy_id or strategy_id
+        out_strategy_name = ""
+        out_strategy_desc = ""
+        if out_strategy_id and self.pattern_manager:
+            info = self.pattern_manager.strategies.get(str(out_strategy_id), {}) or {}
+            out_strategy_name = str(info.get("name", "") or out_strategy_id)
+            out_strategy_desc = str(info.get("description", "") or "")
+        elif strategy_name_goat:
+            out_strategy_name = str(strategy_name_goat)
+        strategies_selected = []
+        for s in top_strategies or []:
+            if not isinstance(s, dict):
+                continue
+            sid = s.get("strategy_id")
+            strategies_selected.append(
+                {
+                    "strategy_id": sid,
+                    "name": s.get("Strategy") or s.get("name") or sid,
+                    "description": s.get("Definition") or s.get("description") or "",
+                }
+            )
         self._log_stage(
             turn=0,
             stage="request_summary",
@@ -2158,6 +2236,8 @@ class AutoDANTurboPro():
                 "best_score_loss": best_score_loss,
                 "final_prompt_preview": str(best_candidate.get("prompt", ""))[:160],
                 "phase": getattr(self, "_current_phase", "unknown"),
+                "strategy_id": out_strategy_id,
+                "strategy_name": out_strategy_name,
                 "time_by_stage_ms": {k: round(float(v), 3) for k, v in request_time_by_stage.items()},
             },
         )
@@ -2180,6 +2260,10 @@ class AutoDANTurboPro():
             "time_by_stage_ms": {k: round(float(v), 1) for k, v in request_time_by_stage.items()},
             "time_ms_attack": attack_ms,
             "time_ms_feedback": feedback_ms,
+            "strategy_id": out_strategy_id,
+            "strategy_name": out_strategy_name,
+            "strategy_description": out_strategy_desc,
+            "strategies_selected": strategies_selected,
         }
 
     def attack_multi_turn(self, request):

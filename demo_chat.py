@@ -289,21 +289,18 @@ def _esc(text: str) -> str:
 
 def models_status_html(kit: DemoKit) -> str:
     """Compact Attacker / Target names currently loaded."""
-    shared = kit.attacker.model is kit.target.model
-    note = "Shared weights" if shared else "Separate weights"
     return f"""
     <div class="models-status">
-      <div class="model-card">
+      <div class="model-card model-card-attacker">
         <div class="model-role">Attacker</div>
         <div class="model-hint">Generates jailbreak prompt</div>
         <div class="model-name">{_esc(short_model_name(kit.agent_repo))}</div>
       </div>
-      <div class="model-card">
+      <div class="model-card model-card-target">
         <div class="model-role">Target</div>
         <div class="model-hint">Answers jailbreak prompt</div>
         <div class="model-name">{_esc(short_model_name(kit.target_repo))}</div>
       </div>
-      <div class="model-shared">{_esc(note)}</div>
     </div>
     """
 
@@ -671,146 +668,261 @@ def format_result(request_id: int, request: str, result: Dict[str, Any]) -> str:
 
 
 DEMO_CSS = """
-.gradio-container { max-width: 1100px !important; }
+:root {
+  --ans-ink: #0f172a;
+  --ans-muted: #64748b;
+  --ans-line: #e2e8f0;
+  --ans-surface: rgba(255,255,255,0.82);
+  --ans-surface-solid: #ffffff;
+  --ans-accent: #0f766e;
+  --ans-accent-soft: #ccfbf1;
+  --ans-attacker: #0e7490;
+  --ans-target: #b45309;
+  --ans-radius: 16px;
+  --ans-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+}
+
+.gradio-container {
+  max-width: 1120px !important;
+  font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif !important;
+}
+
+/* Page atmosphere */
+.gradio-container,
+.main, .wrap {
+  background: transparent !important;
+}
+body, .app {
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #d8f3ef 0%, transparent 55%),
+    radial-gradient(900px 420px at 100% 0%, #e8eef9 0%, transparent 50%),
+    linear-gradient(180deg, #f7fafc 0%, #eef2f6 100%) !important;
+}
+
+.app-header {
+  margin: 0.4rem 0 1.15rem;
+  padding: 1.1rem 1.25rem 1.15rem;
+  border-radius: var(--ans-radius);
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.9), rgba(255,255,255,0.65));
+  border: 1px solid rgba(226,232,240,0.9);
+  box-shadow: var(--ans-shadow);
+  backdrop-filter: blur(8px);
+}
+.app-header .brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.35rem;
+}
+.app-header .brand-dot {
+  width: 0.7rem; height: 0.7rem; border-radius: 999px;
+  background: linear-gradient(135deg, #14b8a6, #0e7490);
+  box-shadow: 0 0 0 4px rgba(20,184,166,0.18);
+}
+.app-header .brand-kicker {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--ans-accent);
+}
 .app-header h1 {
-  font-size: 1.55rem; font-weight: 700; margin: 0 0 0.25rem 0;
-  letter-spacing: -0.02em;
+  font-size: 1.85rem; font-weight: 750; margin: 0;
+  letter-spacing: -0.035em; color: var(--ans-ink);
+  line-height: 1.15;
 }
-.app-header .sub {
-  color: #5b6472; font-size: 0.92rem; line-height: 1.45; margin: 0;
+.app-header .tagline {
+  margin: 0.45rem 0 0;
+  color: var(--ans-muted);
+  font-size: 0.95rem;
+  line-height: 1.45;
 }
-.app-header code {
-  background: #eef2f7; padding: 0.1rem 0.35rem; border-radius: 4px;
-  font-size: 0.82rem;
+
+.section-label {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ans-muted);
+  margin: 0.15rem 0 0.55rem;
 }
+
 .meta-bar {
-  display: flex; flex-wrap: wrap; gap: 0.55rem 1rem;
-  padding: 0.55rem 0.85rem; margin: 0.25rem 0 0.75rem;
-  background: #f4f6f9; border-radius: 10px; font-size: 0.86rem; color: #3d4654;
+  display: flex; flex-wrap: wrap; gap: 0.45rem 0.55rem;
+  padding: 0.65rem 0.75rem; margin: 0.15rem 0 0.85rem;
+  background: var(--ans-surface-solid);
+  border: 1px solid var(--ans-line);
+  border-radius: 999px;
+  font-size: 0.84rem; color: #334155;
+  box-shadow: 0 4px 14px rgba(15,23,42,0.04);
 }
-.meta-bar b { color: #111827; }
+.meta-bar span {
+  background: #f8fafc;
+  border: 1px solid var(--ans-line);
+  border-radius: 999px;
+  padding: 0.18rem 0.65rem;
+}
+.meta-bar b { color: var(--ans-ink); }
+
 .panel {
-  border: 1px solid #e5e7eb; border-radius: 12px;
-  padding: 0.9rem 1rem; background: #fff;
+  border: 1px solid var(--ans-line); border-radius: var(--ans-radius);
+  padding: 1rem 1.1rem; background: var(--ans-surface-solid);
+  box-shadow: var(--ans-shadow);
 }
-.panel-strategy { border-left: 4px solid #2563eb; }
+.panel-strategy { border-left: 4px solid var(--ans-accent); }
 .panel-label {
-  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
-  text-transform: uppercase; color: #6b7280; margin-bottom: 0.35rem;
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ans-muted); margin-bottom: 0.4rem;
 }
-.panel-title { font-size: 1.15rem; font-weight: 700; color: #111827; }
+.panel-title { font-size: 1.2rem; font-weight: 750; color: var(--ans-ink); letter-spacing: -0.02em; }
 .panel-id {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem; color: #6b7280; margin-top: 0.15rem;
+  font-size: 0.78rem; color: var(--ans-muted); margin-top: 0.2rem;
 }
 .panel-desc {
-  margin: 0.65rem 0 0.75rem; color: #374151; line-height: 1.5; font-size: 0.95rem;
+  margin: 0.7rem 0 0.8rem; color: #334155; line-height: 1.55; font-size: 0.95rem;
 }
 .chip-row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
-.chip-label { font-size: 0.8rem; color: #6b7280; margin-right: 0.15rem; }
+.chip-label { font-size: 0.8rem; color: var(--ans-muted); margin-right: 0.15rem; }
 .chip {
-  display: inline-block; background: #eff6ff; color: #1d4ed8;
-  border: 1px solid #bfdbfe; border-radius: 999px;
-  padding: 0.15rem 0.6rem; font-size: 0.8rem; font-weight: 600;
+  display: inline-block; background: var(--ans-accent-soft); color: #115e59;
+  border: 1px solid #99f6e4; border-radius: 999px;
+  padding: 0.18rem 0.65rem; font-size: 0.78rem; font-weight: 650;
 }
-.muted { color: #9ca3af; font-size: 0.85rem; }
+.muted { color: #94a3b8; font-size: 0.85rem; }
+
 .result-md {
-  border: 1px solid #e5e7eb; border-radius: 12px;
-  padding: 0.85rem 1rem; background: #fff; margin-bottom: 0.75rem;
+  border: 1px solid var(--ans-line); border-radius: var(--ans-radius);
+  padding: 1rem 1.1rem; background: var(--ans-surface-solid);
+  margin-bottom: 0.85rem; box-shadow: var(--ans-shadow);
 }
 .result-md h3 {
-  margin: 0 0 0.55rem 0; font-size: 0.95rem; color: #111827;
+  margin: 0 0 0.65rem 0; font-size: 0.78rem; font-weight: 750;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--ans-muted);
 }
-.result-md p, .result-md li { line-height: 1.55; color: #1f2937; }
+.result-md p, .result-md li { line-height: 1.6; color: #1e293b; }
 .result-md pre, .result-md code {
   white-space: pre-wrap; word-break: break-word;
+  background: #f8fafc; border-radius: 8px;
 }
-.request-one-box {
-  border: 1px solid #d1d5db;
-  border-radius: 12px;
-  background: #fff;
-  margin-bottom: 0.85rem;
-  overflow: hidden;
+
+.request-one-box, .input-mode-box, .models-panel, .action-panel {
+  border: 1px solid var(--ans-line);
+  border-radius: var(--ans-radius);
+  background: var(--ans-surface-solid);
+  box-shadow: var(--ans-shadow);
+  /* Do NOT use backdrop-filter/transform here — they offset Gradio dropdown portals */
+  overflow: visible;
 }
+.request-one-box { margin-bottom: 0; }
 .request-one-box .request-title {
-  font-size: 0.92rem;
-  font-weight: 600;
-  color: #111827;
-  padding: 0.55rem 0.85rem 0.2rem;
+  font-size: 0.78rem; font-weight: 750; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ans-muted);
+  padding: 0.75rem 1rem 0.35rem;
 }
 .request-one-box .request-pick {
-  padding: 0 0.55rem 0.35rem;
-  border-bottom: 1px solid #e5e7eb;
+  padding: 0 0.7rem 0.45rem;
+  border-bottom: 1px solid var(--ans-line);
 }
 .request-one-box .request-pick .wrap {
   box-shadow: none !important;
   border: none !important;
   background: transparent !important;
 }
-.request-one-box .request-body {
-  padding: 0.15rem 0.35rem 0.35rem;
-}
+.request-one-box .request-body { padding: 0.25rem 0.45rem 0.45rem; }
 .request-one-box .request-body textarea {
   border: none !important;
   box-shadow: none !important;
-  background: #fafbfc !important;
+  background: rgba(248,250,252,0.9) !important;
   white-space: pre-wrap !important;
   overflow-wrap: anywhere !important;
   word-break: break-word !important;
-  line-height: 1.55 !important;
+  line-height: 1.6 !important;
   min-height: 8.5rem !important;
   max-height: none !important;
   resize: vertical !important;
+  border-radius: 12px !important;
 }
+
 .input-mode-box {
-  border: 1px solid #d1d5db;
-  border-radius: 12px;
-  background: #fff;
-  padding: 0.55rem 0.85rem 0.35rem;
-  margin-bottom: 0.75rem;
+  padding: 0.75rem 0.95rem 0.55rem;
   height: 100%;
 }
 .input-row {
   align-items: stretch !important;
-  gap: 0.75rem;
-  margin-bottom: 0.25rem;
+  gap: 0.9rem;
+  margin: 0.15rem 0 0.9rem;
 }
+
 .models-panel {
-  border: 1px solid #d1d5db;
-  border-radius: 12px;
-  background: #fff;
-  padding: 0.75rem 0.9rem 0.55rem;
-  margin-bottom: 0.85rem;
+  padding: 0.95rem 1.05rem 0.8rem;
+  margin-bottom: 0.95rem;
+}
+.models-panel .md h3, .models-panel h3 {
+  margin: 0 0 0.55rem !important;
+  font-size: 0.78rem !important;
+  font-weight: 750 !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase !important;
+  color: var(--ans-muted) !important;
 }
 .models-status {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.75rem;
-  margin: 0.35rem 0 0.55rem;
+  margin: 0.2rem 0 0.35rem;
 }
 .model-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 0.7rem 0.85rem;
-  background: #fafbfc;
+  border: 1px solid var(--ans-line);
+  border-radius: 14px;
+  padding: 0.85rem 0.95rem;
+  background: linear-gradient(180deg, #fff, #f8fafc);
+  position: relative;
+  border-left: 4px solid var(--ans-line);
 }
+.model-card-attacker { border-left-color: var(--ans-attacker); }
+.model-card-target { border-left-color: var(--ans-target); }
 .model-role {
-  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
-  text-transform: uppercase; color: #2563eb;
+  font-size: 0.7rem; font-weight: 750; letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
-.model-hint { font-size: 0.8rem; color: #6b7280; margin: 0.15rem 0 0.4rem; }
-.model-name { font-size: 1.05rem; font-weight: 700; color: #111827; }
-.model-repo code {
-  font-size: 0.78rem; color: #4b5563;
-  background: #eef2f7; padding: 0.1rem 0.35rem; border-radius: 4px;
+.model-card-attacker .model-role { color: var(--ans-attacker); }
+.model-card-target .model-role { color: var(--ans-target); }
+.model-hint { font-size: 0.8rem; color: var(--ans-muted); margin: 0.2rem 0 0.45rem; }
+.model-name {
+  font-size: 1.08rem; font-weight: 750; color: var(--ans-ink);
+  letter-spacing: -0.02em; line-height: 1.25;
 }
 .model-shared {
   grid-column: 1 / -1;
-  font-size: 0.85rem; color: #374151;
-  padding-top: 0.15rem;
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: 0.82rem; color: var(--ans-muted);
+  padding-top: 0.2rem;
 }
+.model-shared .dot {
+  width: 0.45rem; height: 0.45rem; border-radius: 999px;
+  background: #14b8a6;
+}
+
+.action-panel {
+  padding: 0.75rem 0.9rem;
+  margin: 0.15rem 0 0.85rem;
+}
+.results-head {
+  margin: 0.55rem 0 0.65rem;
+  font-size: 0.78rem; font-weight: 750; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ans-muted);
+}
+
+/* Soften Gradio chrome */
+button.primary, .primary {
+  border-radius: 12px !important;
+  box-shadow: 0 8px 18px rgba(15,118,110,0.22) !important;
+}
+.secondary-wrap button, button.secondary {
+  border-radius: 12px !important;
+}
+footer { display: none !important; }
+
 @media (max-width: 720px) {
   .models-status { grid-template-columns: 1fr; }
+  .app-header h1 { font-size: 1.5rem; }
+  .meta-bar { border-radius: 14px; }
 }
 """
 
@@ -876,17 +988,15 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
         sys.exit(1)
 
     logger = logging.getLogger("DemoLiteLogger")
-    state = {"kit": kit}
+    state = {"kit": kit, "skip_pick_clear": False}
 
     n = len(requests)
+    CUSTOM_RID = -1
     dropdown_choices = [
+        ("Custom (type your own)", CUSTOM_RID),
+    ] + [
         (f"#{i} — {requests[i][:72]}{'…' if len(requests[i]) > 72 else ''}", i)
         for i in range(n)
-    ]
-    default_id = 50 if n > 50 else (0 if n else None)
-    default_request = requests[default_id] if default_id is not None else ""
-    strategy_choices = [("Auto (from pattern library)", "auto")] + [
-        (f"{name} ({sid})", sid) for sid, name in kit.list_strategies()
     ]
 
     target_preset_choices = MODEL_PRESETS + [("Custom HF repo…", CUSTOM_PRESET)]
@@ -908,59 +1018,73 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
     if args.agent_repo and args.agent_repo not in preset_repos:
         default_attacker_preset = CUSTOM_PRESET
         default_attacker_custom = args.agent_repo
-    elif kit.agent_repo == kit.target_repo:
-        default_attacker_preset = SAME_AS_TARGET
+    elif args.agent_repo and args.agent_repo in preset_repos:
+        default_attacker_preset = args.agent_repo
         default_attacker_custom = ""
     elif kit.agent_repo in preset_repos:
+        # Prefer showing the concrete model (e.g. Qwen), not "Same as Target"
         default_attacker_preset = kit.agent_repo
         default_attacker_custom = ""
     else:
-        default_attacker_preset = CUSTOM_PRESET
-        default_attacker_custom = kit.agent_repo
+        default_attacker_preset = DEFAULT_MODEL_REPO
+        default_attacker_custom = ""
 
     ROLE_ATTACKER = "attacker"
     ROLE_TARGET = "target"
 
-    MODE_DATASET = "dataset"
-    MODE_CUSTOM = "custom"
+    MODE_REQUEST = "request"
     MODE_PROMPT = "prompt"
 
-    empty_meta = '<div class="meta-bar"><span class="muted">No results yet</span></div>'
+    empty_meta = (
+        '<div class="meta-bar"><span class="muted">Waiting for a run…</span></div>'
+    )
     empty_strategy = (
         '<div class="panel panel-strategy">'
         '<div class="panel-label">Strategy</div>'
-        '<p class="muted">Not run yet. Click <b>Run demo</b> to see results.</p>'
+        '<div class="panel-title">Ready when you are</div>'
+        '<p class="panel-desc muted">Click <b>Run demo</b> to select strategy, '
+        "generate an attacker prompt, and query the target.</p>"
         "</div>"
     )
 
     def request_from_id(rid):
         if rid is None:
             return ""
-        rid = int(rid)
-        if rid < 0 or rid >= n:
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            return ""
+        if rid == CUSTOM_RID or rid < 0 or rid >= n:
             return ""
         return requests[rid]
 
-    def on_mode_change(mode, rid, request_text):
-        is_dataset = mode == MODE_DATASET
-        is_custom = mode == MODE_CUSTOM
+    def on_mode_change(mode):
         is_prompt = mode == MODE_PROMPT
-        if is_dataset:
-            body = request_from_id(rid)
-        else:
-            body = request_text or ""
         return (
             gr.update(visible=not is_prompt),
-            gr.update(visible=is_dataset),
-            gr.update(value=body, interactive=is_custom),
             gr.update(visible=is_prompt),
-            gr.update(interactive=not is_prompt),
         )
 
-    def on_pick(mode, rid):
-        if mode != MODE_DATASET:
+    def on_pick(rid):
+        """Selecting a dataset id fills request text; Custom clears it (unless switched via edit)."""
+        if state.pop("skip_pick_clear", False):
             return gr.update()
         return request_from_id(rid)
+
+    def on_request_edit(text, rid):
+        """If user edits text away from the selected dataset request, switch to Custom."""
+        if rid is None:
+            return gr.update()
+        try:
+            rid_i = int(rid)
+        except (TypeError, ValueError):
+            return gr.update()
+        if rid_i == CUSTOM_RID or rid_i < 0 or rid_i >= n:
+            return gr.update()
+        if (text or "") != requests[rid_i]:
+            state["skip_pick_clear"] = True
+            return gr.update(value=CUSTOM_RID)
+        return gr.update()
 
     def on_role_toggle(role):
         is_attacker = role == ROLE_ATTACKER
@@ -977,14 +1101,12 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
 
     def on_apply_models(target_preset, target_custom, attacker_preset, attacker_custom):
         try:
-            # Warn early if selecting a non-cached custom/huge download
             preview_repo = None
             if target_preset == CUSTOM_PRESET:
                 preview_repo = (target_custom or "").strip()
             elif target_preset and target_preset != SAME_AS_TARGET:
                 preview_repo = target_preset
             if preview_repo and not model_cache_ready(args.chat_config, preview_repo):
-                # Still attempt load, but surface a clear status first via return after apply
                 logger.warning(
                     "Model %s is not cached locally — download may take a long time",
                     preview_repo,
@@ -1010,7 +1132,7 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
         except Exception as exc:
             return models_status_html(state["kit"]), f"Error: {exc}"
 
-    def on_run(mode, rid, request_text, prompt_text, strategy_choice):
+    def on_run(mode, rid, request_text, prompt_text):
         k = state["kit"]
         try:
             if mode == MODE_PROMPT:
@@ -1019,28 +1141,22 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
                     None, "", result, mode_label="Direct prompt"
                 )
 
-            if mode == MODE_DATASET:
-                if rid is None:
-                    raise ValueError("Select a request id.")
-                rid = int(rid)
-                if rid < 0 or rid >= n:
-                    raise ValueError(f"Invalid request id: {rid}")
-                request = requests[rid]
-                rid_out: Optional[int] = rid
-                label = ""
-            else:
-                request = (request_text or "").strip()
-                if not request:
-                    raise ValueError("Custom request is empty.")
-                rid_out = None
-                label = "Custom request"
+            request = (request_text or "").strip()
+            if not request:
+                raise ValueError("Request is empty.")
 
-            sid = (
-                strategy_choice
-                if strategy_choice and strategy_choice != "auto"
-                else "auto"
-            )
-            result = k.run(request, strategy_id=sid)
+            rid_out: Optional[int] = None
+            label = "Custom request"
+            try:
+                rid_i = int(rid) if rid is not None else CUSTOM_RID
+            except (TypeError, ValueError):
+                rid_i = CUSTOM_RID
+            if 0 <= rid_i < n and request == requests[rid_i]:
+                rid_out = rid_i
+                label = ""
+
+            # Always Auto from pattern library
+            result = k.run(request, strategy_id="auto")
             return format_result_panels(rid_out, request, result, mode_label=label)
         except Exception as exc:
             err = (
@@ -1057,20 +1173,19 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
 
     with gr.Blocks(title="Adversarial NeuroSearch Demo") as demo:
         gr.HTML(
-            f"""
+            """
             <div class="app-header">
+              <div class="brand-mark">
+                <span class="brand-dot"></span>
+                <span class="brand-kicker">Thesis demo</span>
+              </div>
               <h1>Adversarial NeuroSearch</h1>
-              <p class="sub">
-                Modes: <b>dataset request</b> · <b>custom request</b>
-                · <b>direct attacker prompt → target</b><br/>
-                Dataset {n} requests (id 0–{n - 1})
-              </p>
             </div>
             """
         )
 
         with gr.Group(elem_classes=["models-panel"]):
-            gr.Markdown("### Models")
+            gr.HTML('<div class="section-label">Active models</div>')
             models_html = gr.HTML(value=models_status_html(kit))
 
         with gr.Row(elem_classes=["input-row"]):
@@ -1078,20 +1193,19 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
                 with gr.Group(elem_classes=["input-mode-box"]):
                     input_mode = gr.Radio(
                         choices=[
-                            ("1. Select request id", MODE_DATASET),
-                            ("2. Enter custom request", MODE_CUSTOM),
-                            ("3. Enter attacker prompt (skip generation)", MODE_PROMPT),
+                            ("Request", MODE_REQUEST),
+                            ("Attack prompt", MODE_PROMPT),
                         ],
-                        value=MODE_DATASET,
+                        value=MODE_REQUEST,
                         label="Input mode",
                     )
             with gr.Column(scale=3, min_width=360):
                 with gr.Group(elem_classes=["request-one-box"]) as request_box:
                     gr.HTML('<div class="request-title">Request</div>')
-                    with gr.Column(elem_classes=["request-pick"]) as pick_col:
+                    with gr.Column(elem_classes=["request-pick"]):
                         request_dd = gr.Dropdown(
                             choices=dropdown_choices,
-                            value=default_id,
+                            value=CUSTOM_RID,
                             show_label=False,
                             label="Request id",
                             filterable=True,
@@ -1099,17 +1213,18 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
                         )
                     with gr.Column(elem_classes=["request-body"]):
                         request_view = gr.Textbox(
-                            value=default_request,
+                            value="",
                             show_label=False,
                             label="Request text",
+                            placeholder="Type a custom request, or pick one from the dropdown…",
                             lines=8,
                             max_lines=24,
-                            interactive=False,
+                            interactive=True,
                             container=False,
                         )
 
                 with gr.Group(elem_classes=["request-one-box"], visible=False) as prompt_box:
-                    gr.HTML('<div class="request-title">Attacker prompt (sent to target)</div>')
+                    gr.HTML('<div class="request-title">Attacker prompt</div>')
                     with gr.Column(elem_classes=["request-body"]):
                         prompt_input = gr.Textbox(
                             value="",
@@ -1122,20 +1237,17 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
                             container=False,
                         )
 
-        with gr.Row():
-            strategy_dd = gr.Dropdown(
-                choices=strategy_choices,
-                value="auto",
-                label="Strategy",
-                filterable=True,
-                info="Used for modes 1–2. Auto = select from pattern library",
-                scale=3,
+        with gr.Group(elem_classes=["action-panel"]):
+            run_btn = gr.Button("Run demo", variant="primary", size="lg")
+            status = gr.Textbox(
+                label="Status",
+                value="Ready.",
+                interactive=False,
+                max_lines=1,
+                container=True,
             )
-            run_btn = gr.Button("Run demo", variant="primary", size="lg", scale=1)
 
-        status = gr.Textbox(label="Status", value="Ready.", interactive=False, max_lines=1)
-
-        gr.Markdown("### Results")
+        gr.HTML('<div class="results-head">Results</div>')
         meta_html = gr.HTML(value=empty_meta)
         strategy_html = gr.HTML(value=empty_strategy)
         prompt_md = gr.Markdown(
@@ -1147,44 +1259,44 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
             elem_classes=["result-md"],
         )
 
-        with gr.Group(elem_classes=["models-panel"]):
-            gr.Markdown("### Edit model")
-            model_role = gr.Radio(
-                choices=[
-                    ("Attacker", ROLE_ATTACKER),
-                    ("Target", ROLE_TARGET),
-                ],
-                value=ROLE_TARGET,
-                label="Role",
-                info="Toggle which role to change",
-            )
-            with gr.Group(visible=False) as attacker_edit:
-                attacker_preset_dd = gr.Dropdown(
-                    choices=attacker_preset_choices,
-                    value=default_attacker_preset,
-                    label="Attacker model",
-                    info="Generates the jailbreak prompt",
+        with gr.Accordion("Edit models", open=False):
+            with gr.Group(elem_classes=["models-panel"]):
+                model_role = gr.Radio(
+                    choices=[
+                        ("Attacker", ROLE_ATTACKER),
+                        ("Target", ROLE_TARGET),
+                    ],
+                    value=ROLE_TARGET,
+                    label="Role",
+                    info="Toggle which role to change",
                 )
-                attacker_custom_tb = gr.Textbox(
-                    value=default_attacker_custom,
-                    label="Custom Attacker HF repo",
-                    placeholder="org/model-name",
-                    visible=(default_attacker_preset == CUSTOM_PRESET),
-                )
-            with gr.Group(visible=True) as target_edit:
-                target_preset_dd = gr.Dropdown(
-                    choices=target_preset_choices,
-                    value=default_target_preset,
-                    label="Target model",
-                    info="Answers the jailbreak prompt",
-                )
-                target_custom_tb = gr.Textbox(
-                    value=default_target_custom,
-                    label="Custom Target HF repo",
-                    placeholder="org/model-name",
-                    visible=(default_target_preset == CUSTOM_PRESET),
-                )
-            apply_models_btn = gr.Button("Apply / reload models", variant="secondary")
+                with gr.Group(visible=False) as attacker_edit:
+                    attacker_preset_dd = gr.Dropdown(
+                        choices=attacker_preset_choices,
+                        value=default_attacker_preset,
+                        label="Attacker model",
+                        info="Generates the jailbreak prompt",
+                    )
+                    attacker_custom_tb = gr.Textbox(
+                        value=default_attacker_custom,
+                        label="Custom Attacker HF repo",
+                        placeholder="org/model-name",
+                        visible=(default_attacker_preset == CUSTOM_PRESET),
+                    )
+                with gr.Group(visible=True) as target_edit:
+                    target_preset_dd = gr.Dropdown(
+                        choices=target_preset_choices,
+                        value=default_target_preset,
+                        label="Target model",
+                        info="Answers the jailbreak prompt",
+                    )
+                    target_custom_tb = gr.Textbox(
+                        value=default_target_custom,
+                        label="Custom Target HF repo",
+                        placeholder="org/model-name",
+                        visible=(default_target_preset == CUSTOM_PRESET),
+                    )
+                apply_models_btn = gr.Button("Apply / reload models", variant="secondary")
 
         apply_models_btn.click(
             on_apply_models,
@@ -1213,17 +1325,22 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
         )
         input_mode.change(
             on_mode_change,
-            inputs=[input_mode, request_dd, request_view],
-            outputs=[request_box, pick_col, request_view, prompt_box, strategy_dd],
+            inputs=[input_mode],
+            outputs=[request_box, prompt_box],
         )
         request_dd.change(
             on_pick,
-            inputs=[input_mode, request_dd],
+            inputs=[request_dd],
             outputs=[request_view],
+        )
+        request_view.change(
+            on_request_edit,
+            inputs=[request_view, request_dd],
+            outputs=[request_dd],
         )
         run_btn.click(
             on_run,
-            inputs=[input_mode, request_dd, request_view, prompt_input, strategy_dd],
+            inputs=[input_mode, request_dd, request_view, prompt_input],
             outputs=[strategy_html, prompt_md, response_md, meta_html, status],
         )
 
@@ -1233,9 +1350,18 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
         share=args.share,
         css=DEMO_CSS,
         theme=gr.themes.Soft(
-            primary_hue="blue",
+            primary_hue="teal",
+            secondary_hue="slate",
             neutral_hue="slate",
-            font=gr.themes.GoogleFont("Source Sans 3"),
+            font=gr.themes.GoogleFont("Plus Jakarta Sans"),
+            font_mono=gr.themes.GoogleFont("IBM Plex Mono"),
+        ).set(
+            body_background_fill="*neutral_50",
+            block_radius="*radius_lg",
+            button_primary_background_fill="#0f766e",
+            button_primary_background_fill_hover="#0d9488",
+            button_primary_text_color="#ffffff",
+            border_color_primary="#e2e8f0",
         ),
     )
 

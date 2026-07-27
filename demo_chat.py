@@ -287,24 +287,6 @@ def _esc(text: str) -> str:
     )
 
 
-def models_status_html(kit: DemoKit) -> str:
-    """Compact Attacker / Target names currently loaded."""
-    return f"""
-    <div class="models-status">
-      <div class="model-card model-card-attacker">
-        <div class="model-role">Attacker</div>
-        <div class="model-hint">Generates jailbreak prompt</div>
-        <div class="model-name">{_esc(short_model_name(kit.agent_repo))}</div>
-      </div>
-      <div class="model-card model-card-target">
-        <div class="model-role">Target</div>
-        <div class="model-hint">Answers jailbreak prompt</div>
-        <div class="model-name">{_esc(short_model_name(kit.target_repo))}</div>
-      </div>
-    </div>
-    """
-
-
 def unload_hf_model(hf_model) -> None:
     """Free a HuggingFaceModel from GPU/CPU memory."""
     if hf_model is None:
@@ -564,7 +546,7 @@ def to_markdown_block(title: str, body: str, empty_hint: str) -> str:
     """Format a titled markdown section for Gradio Markdown display."""
     text = (body or "").strip()
     if not text:
-        return f"### {title}\n\n_{empty_hint}_"
+        return f"### {title}\n\n{empty_hint}"
     # Keep model output as markdown; normalize newlines for readability.
     return f"### {title}\n\n{text}"
 
@@ -574,15 +556,14 @@ def format_result_panels(
     request: str,
     result: Dict[str, Any],
     mode_label: str = "",
-) -> Tuple[str, str, str, str, str]:
-    """Return (strategy_html, prompt_md, response_md, meta_html, status)."""
+) -> Tuple[str, str, str]:
+    """Return (strategy_html, prompt_md, response_md)."""
     strategy_name = result.get("strategy_name") or "(unknown)"
     strategy_id = result.get("strategy_id") or ""
     strategy_desc = result.get("strategy_description") or ""
     prompt = result.get("final_prompt") or ""
     response = result.get("final_response") or ""
     selected = result.get("strategies_selected") or []
-    timing = result.get("timing") or {}
     mode = result.get("mode") or "full"
     prompt_only = mode == "prompt_only"
 
@@ -614,36 +595,13 @@ def format_result_panels(
         </div>
         """
 
-    if request_id is not None:
-        req_label = f"Request <b>#{request_id}</b>"
-        status_id = f"#{request_id}"
-    elif mode_label:
-        req_label = f"<b>{_esc(mode_label)}</b>"
-        status_id = mode_label
-    else:
-        req_label = "<b>Custom</b>"
-        status_id = "custom"
-
-    meta_html = (
-        f'<div class="meta-bar">'
-        f'<span>{req_label}</span>'
-        f'<span>select {timing.get("select_s", 0):.1f}s</span>'
-        f'<span>attacker {timing.get("attacker_s", 0):.1f}s</span>'
-        f'<span>target {timing.get("target_s", 0):.1f}s</span>'
-        f'<span>total <b>{float(result.get("elapsed_s", 0)):.1f}s</b></span>'
-        f"</div>"
-    )
-    status = (
-        f"Done {status_id} · {strategy_name} · "
-        f"{float(result.get('elapsed_s', 0)):.1f}s"
-    )
     prompt_md = to_markdown_block(
         "Attacker prompt", prompt, "No prompt generated."
     )
     response_md = to_markdown_block(
         "Target response", response, "No response generated."
     )
-    return strategy_html, prompt_md, response_md, meta_html, status
+    return strategy_html, prompt_md, response_md
 
 
 def format_result(request_id: int, request: str, result: Dict[str, Any]) -> str:
@@ -668,46 +626,243 @@ def format_result(request_id: int, request: str, result: Dict[str, Any]) -> str:
 
 
 DEMO_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap');
+
 :root {
-  --ans-ink: #0f172a;
-  --ans-muted: #64748b;
-  --ans-line: #e2e8f0;
-  --ans-surface: rgba(255,255,255,0.82);
+  --ans-ink: #111827;
+  --ans-muted: #374151;
+  --ans-line: #93c5fd;
+  --ans-surface: #ffffff;
   --ans-surface-solid: #ffffff;
-  --ans-accent: #0f766e;
-  --ans-accent-soft: #ccfbf1;
-  --ans-attacker: #0e7490;
-  --ans-target: #b45309;
+  --ans-accent: #1e3a8a;
+  --ans-accent-dark: #1e3a8a;
+  --ans-accent-hover: #2563eb;
+  --ans-accent-light: #3b82f6;
+  --ans-accent-soft: #dbeafe;
+  --ans-attacker: #1d4ed8;
+  --ans-target: #2563eb;
   --ans-radius: 16px;
-  --ans-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+  --ans-shadow: 0 4px 14px rgba(30, 58, 138, 0.08);
+  --ans-page: #e0f2fe;
+  --ans-card: #ffffff;
 }
 
 .gradio-container {
   max-width: 1120px !important;
-  font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif !important;
+  font-family: "Montserrat", "Segoe UI", sans-serif !important;
+}
+.gradio-container,
+.gradio-container *:not(code):not(pre):not(kbd):not(samp) {
+  font-family: "Montserrat", "Segoe UI", sans-serif !important;
 }
 
-/* Page atmosphere */
+/* Page shell: light blue on outer layout only */
+html {
+  color-scheme: light only !important;
+}
+html, body, .app, .app > .main,
 .gradio-container,
-.main, .wrap {
+.gradio-container > .main,
+.gradio-container .main,
+.gradio-container .contain,
+.gradio-container .tabs,
+.gradio-container .tabitem,
+.main, .contain {
+  background: var(--ans-page) !important;
+  background-color: var(--ans-page) !important;
+  background-image: none !important;
+  color: #111827 !important;
+}
+
+/* Override Gradio / framework CSS variables (prevents slate/dark reapply) */
+:root,
+.gradio-container,
+gradio-app {
+  --body-background-fill: #e0f2fe !important;
+  --block-background-fill: #ffffff !important;
+  --block-border-color: #93c5fd !important;
+  --block-label-text-color: #374151 !important;
+  --block-title-text-color: #111827 !important;
+  --body-text-color: #111827 !important;
+  --input-background-fill: #ffffff !important;
+  --input-border-color: #93c5fd !important;
+  --background-fill-primary: #e0f2fe !important;
+  --background-fill-secondary: #ffffff !important;
+  --button-primary-background-fill: #1e3a8a !important;
+  --button-primary-text-color: #ffffff !important;
+  --button-secondary-background-fill: #ffffff !important;
+  --button-secondary-text-color: #111827 !important;
+  --neutral-50: #e0f2fe !important;
+  --neutral-100: #dbeafe !important;
+  --neutral-200: #bfdbfe !important;
+  --neutral-800: #111827 !important;
+  --neutral-900: #111827 !important;
+  --neutral-950: #111827 !important;
+}
+
+/* All inner wrappers/blocks: transparent (shows light-blue page) */
+.gradio-container .wrap,
+.gradio-container .block,
+.gradio-container .form,
+.gradio-container .gr-group,
+.gradio-container .gr-panel,
+.gradio-container .gr-box,
+.gradio-container .column,
+.gradio-container .row,
+.gradio-container .gap,
+.gradio-container .fillable,
+.gradio-container .fill_width,
+.gradio-container .gr-column,
+.gradio-container .gr-row,
+.gradio-container fieldset,
+.gradio-container .panel,
+.gradio-container .input-container,
+.gradio-container .dropdown-container,
+.gradio-container .block > .wrap,
+.gradio-container div[class*="svelte"],
+.gradio-container [class*="block"],
+.gradio-container header,
+.gradio-container footer {
   background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  color: #111827 !important;
 }
-body, .app {
-  background:
-    radial-gradient(1200px 500px at 10% -10%, #d8f3ef 0%, transparent 55%),
-    radial-gradient(900px 420px at 100% 0%, #e8eef9 0%, transparent 50%),
-    linear-gradient(180deg, #f7fafc 0%, #eef2f6 100%) !important;
+
+/* White card surfaces */
+.app-header,
+.panel,
+.result-md,
+.meta-bar,
+.input-mode-box,
+.input-stack,
+.request-one-box,
+.model-pick-card,
+.input-mode-box > .wrap,
+.input-stack > .wrap,
+.request-one-box > .wrap,
+.model-pick-card > .wrap,
+.gradio-container .html-container,
+.gradio-container .html-container.padding,
+.gradio-container .prose,
+.gradio-container .block-html,
+.gradio-container .block-markdown,
+.gradio-container .block-textbox,
+.gradio-container .block-dropdown,
+.gradio-container .block-radio,
+.gradio-container .block-group,
+.gradio-container .block-button {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  background-image: none !important;
 }
+
+/* Force-remove dark/slate at every level */
+.gradio-container [class*="dark"],
+.gradio-container [class*="slate"],
+.gradio-container [class*="neutral-9"],
+.gradio-container [class*="neutral-8"],
+.gradio-container [data-theme="dark"],
+.gradio-container .dark,
+.gradio-container [style*="background-color: rgb(15"],
+.gradio-container [style*="background-color: rgb(17"],
+.gradio-container [style*="background-color: rgb(30"],
+.gradio-container [style*="background-color: rgb(31"],
+.gradio-container [style*="background-color: rgb(51"],
+.gradio-container [style*="background-color:#1"],
+.gradio-container [style*="background-color: #1"],
+.gradio-container [style*="background-color:#0"],
+.gradio-container [style*="background-color: #0"],
+.gradio-container [style*="background-color:#2"],
+.gradio-container [style*="background-color: #2"],
+.gradio-container [style*="background-color:#3"],
+.gradio-container [style*="background-color: #3"] {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  background-image: none !important;
+  color: #111827 !important;
+}
+/* Page-level dark overrides fall back to light blue */
+html [class*="dark"],
+body [class*="dark"],
+.gradio-container > .main[class*="dark"],
+.gradio-container .main.fillable {
+  background: var(--ans-page) !important;
+  background-color: var(--ans-page) !important;
+}
+.gradio-container label,
+.gradio-container .label-wrap,
+.gradio-container .label-wrap span,
+.gradio-container .block-label span,
+.gradio-container .gr-form label,
+.gradio-container .prose,
+.gradio-container .prose p,
+.gradio-container .markdown,
+.gradio-container .markdown p,
+.gradio-container .section-label,
+.gradio-container .results-head,
+.gradio-container .panel-label,
+.gradio-container .panel-desc,
+.gradio-container .model-hint,
+.gradio-container .chip-label,
+.gradio-container h1,
+.gradio-container h2,
+.gradio-container h3,
+.gradio-container .panel-title,
+.gradio-container .result-md p,
+.gradio-container .result-md li,
+.gradio-container .result-md em,
+.gradio-container .result-md strong {
+  color: #111827 !important;
+}
+.gradio-container .request-title,
+.gradio-container .models-panel .section-label {
+  color: #1e3a8a !important;
+}
+.gradio-container .results-head {
+  color: #1e3a8a !important;
+}
+.gradio-container input,
+.gradio-container textarea,
+.gradio-container select,
+.gradio-container .wrap input,
+.gradio-container .wrap textarea,
+.gradio-container [data-testid="textbox"] textarea,
+.gradio-container [data-testid="dropdown"] input {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #111827 !important;
+  -webkit-text-fill-color: #111827 !important;
+  border-color: var(--ans-line) !important;
+}
+.gradio-container .gr-radio label,
+.gradio-container .gr-checkbox label,
+.gradio-container .gr-dropdown label {
+  color: #111827 !important;
+}
+.gradio-container ul.options li.item,
+.gradio-container ul.options li.item span,
+.gradio-container ul.options li.item:hover,
+.gradio-container ul.options li.item.selected {
+  background: #ffffff !important;
+  color: #111827 !important;
+}
+.gradio-container .selected,
+.gradio-container [aria-selected="true"],
+.gradio-container label.selected {
+  background: #dbeafe !important;
+  color: #111827 !important;
+}
+
+/* Dark text everywhere (except primary buttons) */
 
 .app-header {
   margin: 0.4rem 0 1.15rem;
   padding: 1.1rem 1.25rem 1.15rem;
   border-radius: var(--ans-radius);
-  background:
-    linear-gradient(135deg, rgba(255,255,255,0.9), rgba(255,255,255,0.65));
-  border: 1px solid rgba(226,232,240,0.9);
+  background: #ffffff;
+  border: 1px solid var(--ans-line);
   box-shadow: var(--ans-shadow);
-  backdrop-filter: blur(8px);
 }
 .app-header .brand-mark {
   display: inline-flex;
@@ -717,12 +872,12 @@ body, .app {
 }
 .app-header .brand-dot {
   width: 0.7rem; height: 0.7rem; border-radius: 999px;
-  background: linear-gradient(135deg, #14b8a6, #0e7490);
-  box-shadow: 0 0 0 4px rgba(20,184,166,0.18);
+  background: linear-gradient(135deg, #3b82f6, #1e3a8a);
+  box-shadow: 0 0 0 4px rgba(59,130,246,0.2);
 }
 .app-header .brand-kicker {
   font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em;
-  text-transform: uppercase; color: var(--ans-accent);
+  text-transform: uppercase; color: #1e3a8a;
 }
 .app-header h1 {
   font-size: 1.85rem; font-weight: 750; margin: 0;
@@ -741,27 +896,36 @@ body, .app {
   text-transform: uppercase; color: var(--ans-muted);
   margin: 0.15rem 0 0.55rem;
 }
+.models-panel .section-label,
+.gradio-container .models-panel .section-label {
+  font-size: 1.15rem !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.08em !important;
+  color: #1e3a8a !important;
+  margin: 0.15rem 0 0.85rem !important;
+}
 
 .meta-bar {
   display: flex; flex-wrap: wrap; gap: 0.45rem 0.55rem;
   padding: 0.65rem 0.75rem; margin: 0.15rem 0 0.85rem;
-  background: var(--ans-surface-solid);
+  background: #ffffff;
   border: 1px solid var(--ans-line);
   border-radius: 999px;
-  font-size: 0.84rem; color: #334155;
-  box-shadow: 0 4px 14px rgba(15,23,42,0.04);
+  font-size: 0.84rem; color: #1e293b;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.06);
 }
 .meta-bar span {
-  background: #f8fafc;
+  background: #ffffff;
   border: 1px solid var(--ans-line);
   border-radius: 999px;
   padding: 0.18rem 0.65rem;
+  color: #111827;
 }
 .meta-bar b { color: var(--ans-ink); }
 
 .panel {
   border: 1px solid var(--ans-line); border-radius: var(--ans-radius);
-  padding: 1rem 1.1rem; background: var(--ans-surface-solid);
+  padding: 1rem 1.1rem; background: #ffffff;
   box-shadow: var(--ans-shadow);
 }
 .panel-strategy { border-left: 4px solid var(--ans-accent); }
@@ -775,45 +939,89 @@ body, .app {
   font-size: 0.78rem; color: var(--ans-muted); margin-top: 0.2rem;
 }
 .panel-desc {
-  margin: 0.7rem 0 0.8rem; color: #334155; line-height: 1.55; font-size: 0.95rem;
+  margin: 0.7rem 0 0.8rem; color: #374151; line-height: 1.55; font-size: 0.85rem;
+}
+.panel-desc b, .panel-desc strong {
+  color: #1e3a8a;
+  font-weight: 700;
+}
+.gradio-container .panel-desc {
+  font-size: 0.85rem !important;
+  line-height: 1.55 !important;
+  color: #374151 !important;
+}
+.result-md p, .result-md li {
+  font-size: 0.85rem !important;
+  line-height: 1.55; color: #374151 !important;
+}
+.gradio-container .result-md p,
+.gradio-container .result-md li {
+  font-size: 0.85rem !important;
+  color: #374151 !important;
 }
 .chip-row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
 .chip-label { font-size: 0.8rem; color: var(--ans-muted); margin-right: 0.15rem; }
 .chip {
-  display: inline-block; background: var(--ans-accent-soft); color: #115e59;
-  border: 1px solid #99f6e4; border-radius: 999px;
+  display: inline-block; background: #dbeafe; color: #1e3a8a;
+  border: 1px solid #93c5fd; border-radius: 999px;
   padding: 0.18rem 0.65rem; font-size: 0.78rem; font-weight: 650;
 }
-.muted { color: #94a3b8; font-size: 0.85rem; }
+.muted { color: #374151; font-size: 0.85rem; }
 
 .result-md {
   border: 1px solid var(--ans-line); border-radius: var(--ans-radius);
-  padding: 1rem 1.1rem; background: var(--ans-surface-solid);
+  padding: 1rem 1.1rem; background: #ffffff;
   margin-bottom: 0.85rem; box-shadow: var(--ans-shadow);
+  color: #111827 !important;
 }
 .result-md h3 {
   margin: 0 0 0.65rem 0; font-size: 0.78rem; font-weight: 750;
-  letter-spacing: 0.08em; text-transform: uppercase; color: var(--ans-muted);
+  letter-spacing: 0.08em; text-transform: uppercase; color: #1e3a8a;
 }
-.result-md p, .result-md li { line-height: 1.6; color: #1e293b; }
+.result-md em, .result-md i, .result-md strong {
+  color: #111827 !important;
+  font-style: normal;
+}
 .result-md pre, .result-md code {
   white-space: pre-wrap; word-break: break-word;
-  background: #f8fafc; border-radius: 8px;
+  background: #f0f9ff; border-radius: 8px;
+  color: #111827 !important;
 }
 
-.request-one-box, .input-mode-box, .models-panel, .action-panel {
+.request-one-box, .input-mode-box, .models-panel, .input-stack {
   border: 1px solid var(--ans-line);
   border-radius: var(--ans-radius);
-  background: var(--ans-surface-solid);
+  background: #ffffff !important;
+  background-color: #ffffff !important;
   box-shadow: var(--ans-shadow);
-  /* Do NOT use backdrop-filter/transform here — they offset Gradio dropdown portals */
   overflow: visible;
 }
+.input-mode-box > .wrap,
+.input-stack > .wrap,
+.request-one-box > .wrap,
+.models-panel > .wrap {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  box-shadow: none !important;
+}
+.input-stack .request-one-box {
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  margin-bottom: 0;
+  background: #ffffff !important;
+}
 .request-one-box { margin-bottom: 0; }
-.request-one-box .request-title {
-  font-size: 0.78rem; font-weight: 750; letter-spacing: 0.08em;
-  text-transform: uppercase; color: var(--ans-muted);
-  padding: 0.75rem 1rem 0.35rem;
+.request-one-box .request-title,
+.request-top-bar .request-title,
+.gradio-container .request-title {
+  font-size: 1.15rem !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  color: #1e3a8a !important;
+  padding: 0 !important;
+  margin: 0 !important;
 }
 .request-one-box .request-pick {
   padding: 0 0.7rem 0.45rem;
@@ -822,13 +1030,25 @@ body, .app {
 .request-one-box .request-pick .wrap {
   box-shadow: none !important;
   border: none !important;
-  background: transparent !important;
+  background: #ffffff !important;
 }
 .request-one-box .request-body { padding: 0.25rem 0.45rem 0.45rem; }
+.request-one-box .request-body textarea,
+.request-one-box .request-body textarea:focus,
+.request-one-box .request-body textarea::placeholder {
+  color: #111827 !important;
+  -webkit-text-fill-color: #111827 !important;
+}
+.request-one-box .request-body textarea::placeholder {
+  color: #64748b !important;
+  -webkit-text-fill-color: #64748b !important;
+  opacity: 1 !important;
+}
 .request-one-box .request-body textarea {
-  border: none !important;
+  border: 1px solid var(--ans-line) !important;
   box-shadow: none !important;
-  background: rgba(248,250,252,0.9) !important;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
   white-space: pre-wrap !important;
   overflow-wrap: anywhere !important;
   word-break: break-word !important;
@@ -837,90 +1057,387 @@ body, .app {
   max-height: none !important;
   resize: vertical !important;
   border-radius: 12px !important;
+  font-size: 0.95rem !important;
+}
+.request-run-row {
+  padding: 0.35rem 0.85rem 0.85rem;
+  border-top: 1px solid var(--ans-line);
+}
+.request-run-row button.primary,
+.request-run-row button.primary span {
+  width: 100%;
+  color: #ffffff !important;
+  background: #1e3a8a !important;
+  border: 1px solid #1e3a8a !important;
+  box-shadow: 0 6px 16px rgba(30,58,138,0.22) !important;
+  font-weight: 700 !important;
+}
+.request-run-row button.primary:hover,
+.request-run-row button.primary:hover span {
+  color: #ffffff !important;
+  background: #2563eb !important;
+  border-color: #2563eb !important;
+}
+/* Hide Gradio progress / ETA inside the input area */
+.input-stack .progress-bar,
+.input-stack .eta-bar,
+.input-stack .progress-text,
+.input-stack [class*="timer"],
+.input-stack [class*="progress"] {
+  display: none !important;
 }
 
 .input-mode-box {
-  padding: 0.75rem 0.95rem 0.55rem;
-  height: 100%;
+  padding: 0;
+  height: auto;
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
 }
 .input-row {
   align-items: stretch !important;
   gap: 0.9rem;
   margin: 0.15rem 0 0.9rem;
 }
+.request-top-bar {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 0.75rem;
+  padding: 0.55rem 0.85rem 0.35rem;
+  border-bottom: 1px solid var(--ans-line);
+}
+.request-top-bar .request-title {
+  padding: 0 !important;
+  margin: 0 !important;
+  flex: 1;
+}
+.request-mode-toggle {
+  flex: 0 0 auto;
+  min-width: 260px;
+}
+/* Mode pills: light blue + dark blue text; selected = dark blue + white */
+.request-mode-toggle .wrap,
+.request-mode-toggle .form,
+.request-mode-toggle .block {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.request-mode-toggle label,
+.request-mode-toggle .label-wrap {
+  display: none !important;
+}
+.request-mode-toggle .wrap > label,
+.request-mode-toggle fieldset,
+.request-mode-toggle .form > div {
+  display: flex !important;
+  flex-direction: row !important;
+  gap: 0.45rem !important;
+  background: transparent !important;
+  border: none !important;
+}
+.request-mode-toggle label:not(.label-wrap),
+.request-mode-toggle .wrap label,
+.request-mode-toggle span:has(input[type="radio"]),
+.request-mode-toggle label.svelte-1qxc5u1,
+.request-mode-toggle .form label {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin: 0 !important;
+  padding: 0.4rem 0.85rem !important;
+  border-radius: 999px !important;
+  background: #e0f2fe !important;
+  background-color: #e0f2fe !important;
+  color: #1e3a8a !important;
+  border: 1px solid #93c5fd !important;
+  font-size: 0.82rem !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+  line-height: 1.2 !important;
+}
+.request-mode-toggle input[type="radio"] {
+  position: absolute !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+.request-mode-toggle label:has(input:checked),
+.request-mode-toggle label.selected,
+.request-mode-toggle .selected {
+  background: #1e3a8a !important;
+  background-color: #1e3a8a !important;
+  color: #ffffff !important;
+  border-color: #1e3a8a !important;
+}
+.request-mode-toggle label:has(input:checked) span,
+.request-mode-toggle label.selected span {
+  color: #ffffff !important;
+}
+
+/* Gradio Group wraps Active Models in .styler — match white section UI */
+.gradio-container .styler:has(.models-panel),
+.gradio-container .styler:has(.section-label),
+.gradio-container .models-panel.styler,
+.gradio-container .styler.models-panel,
+.gradio-container div.styler.svelte-1nguped:has(.model-pick-card) {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  background-image: none !important;
+  border: 1px solid var(--ans-line) !important;
+  border-radius: var(--ans-radius) !important;
+  box-shadow: var(--ans-shadow) !important;
+}
 
 .models-panel {
-  padding: 0.95rem 1.05rem 0.8rem;
+  padding: 0.95rem 1.05rem 0.95rem;
   margin-bottom: 0.95rem;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  background-image: none !important;
+  border: 1px solid var(--ans-line) !important;
+  border-radius: var(--ans-radius) !important;
+  box-shadow: var(--ans-shadow) !important;
 }
-.models-panel .md h3, .models-panel h3 {
-  margin: 0 0 0.55rem !important;
-  font-size: 0.78rem !important;
-  font-weight: 750 !important;
-  letter-spacing: 0.1em !important;
-  text-transform: uppercase !important;
-  color: var(--ans-muted) !important;
+
+/* Active Models: white shell; nested wrappers transparent so white shows */
+.models-panel > .wrap,
+.models-panel .block,
+.models-panel .wrap,
+.models-panel .form,
+.models-panel .column,
+.models-panel .row,
+.models-panel .gap,
+.models-panel .fillable,
+.models-panel .gr-column,
+.models-panel .gr-row,
+.models-panel .gr-group,
+.models-panel .styler,
+.models-panel div[class*="svelte"],
+.models-panel .html-container,
+.models-panel .html-container.padding,
+.models-panel .html-container .prose,
+.models-panel .block.html,
+.models-panel .block.html > .wrap,
+.models-panel .block-dropdown,
+.models-panel .block-textbox,
+.models-panel .block-group,
+.models-panel .input-container,
+.models-panel .dropdown-container,
+.models-panel .single-select,
+.models-panel .container,
+.models-panel .secondary-wrap,
+.models-panel .models-pick-row,
+.models-panel .models-pick-row > .wrap,
+.models-panel .models-pick-row .column,
+.models-panel .models-pick-row .column > .wrap,
+.models-panel .models-apply-row,
+.models-panel .models-apply-row > .wrap {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  color: #111827 !important;
 }
-.models-status {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-  margin: 0.2rem 0 0.35rem;
+.models-panel .model-pick-card,
+.models-panel .model-pick-card > .wrap {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  background-image: none !important;
+  color: #111827 !important;
 }
-.model-card {
+.models-panel .html-container,
+.models-panel .html-container.padding,
+.models-panel .block.html,
+.models-panel .block.html > .wrap {
+  border: none !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+.models-panel input,
+.models-panel textarea,
+.models-panel select,
+.models-panel .wrap input,
+.models-panel .wrap textarea,
+.models-panel [data-testid="dropdown"] input,
+.models-panel [data-testid="dropdown"] .wrap,
+.models-panel [data-testid="dropdown"] .container,
+.models-panel [role="combobox"],
+.models-panel [role="listbox"],
+.models-panel .block-dropdown,
+.models-panel .block-dropdown > .wrap,
+.models-panel .block-dropdown .wrap,
+.model-pick-card [data-testid="dropdown"],
+.model-pick-card [data-testid="dropdown"] input,
+.model-pick-card [data-testid="dropdown"] .wrap,
+.model-pick-card .secondary-wrap,
+.model-pick-card .container {
+  background: #e0f2fe !important;
+  background-color: #e0f2fe !important;
+  color: #111827 !important;
+  -webkit-text-fill-color: #111827 !important;
+  border-color: var(--ans-line) !important;
+}
+.models-panel [class*="dark"],
+.models-panel [class*="slate"],
+.models-panel [class*="neutral-9"],
+.models-panel [class*="neutral-8"] {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #111827 !important;
+}
+.models-panel .section-label {
+  margin-bottom: 0.85rem;
+}
+.models-pick-row {
+  gap: 0.85rem !important;
+  margin-bottom: 0.35rem;
+}
+.model-pick-card {
   border: 1px solid var(--ans-line);
   border-radius: 14px;
-  padding: 0.85rem 0.95rem;
-  background: linear-gradient(180deg, #fff, #f8fafc);
-  position: relative;
+  padding: 0.75rem 0.85rem 0.55rem;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
   border-left: 4px solid var(--ans-line);
+  height: 100%;
 }
-.model-card-attacker { border-left-color: var(--ans-attacker); }
-.model-card-target { border-left-color: var(--ans-target); }
-.model-role {
+.model-pick-card > .wrap {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  box-shadow: none !important;
+}
+.model-pick-attacker { border-left-color: var(--ans-attacker); }
+.model-pick-target { border-left-color: var(--ans-target); }
+.model-pick-card .model-role {
   font-size: 0.7rem; font-weight: 750; letter-spacing: 0.08em;
-  text-transform: uppercase;
+  text-transform: uppercase; margin-bottom: 0.15rem;
 }
-.model-card-attacker .model-role { color: var(--ans-attacker); }
-.model-card-target .model-role { color: var(--ans-target); }
-.model-hint { font-size: 0.8rem; color: var(--ans-muted); margin: 0.2rem 0 0.45rem; }
-.model-name {
-  font-size: 1.08rem; font-weight: 750; color: var(--ans-ink);
-  letter-spacing: -0.02em; line-height: 1.25;
+.model-pick-attacker .model-role { color: var(--ans-attacker); }
+.model-pick-target .model-role { color: var(--ans-target); }
+.model-pick-card .model-hint {
+  font-size: 0.8rem; color: var(--ans-muted); margin: 0 0 0.55rem;
 }
-.model-shared {
-  grid-column: 1 / -1;
-  display: inline-flex; align-items: center; gap: 0.4rem;
-  font-size: 0.82rem; color: var(--ans-muted);
-  padding-top: 0.2rem;
+.model-pick-card label,
+.model-pick-card .label-wrap span {
+  display: none !important;
 }
-.model-shared .dot {
-  width: 0.45rem; height: 0.45rem; border-radius: 999px;
-  background: #14b8a6;
+.models-apply-row {
+  margin-top: 0.25rem;
+}
+.models-panel button.secondary,
+.models-panel button.secondary span,
+.models-panel .secondary-wrap button,
+.models-panel .secondary-wrap button span,
+.models-apply-row button,
+.models-apply-row button span,
+.models-apply-row button.secondary,
+.models-apply-row button.secondary span,
+.models-apply-row button.primary,
+.models-apply-row button.primary span {
+  background: #1e3a8a !important;
+  background-color: #1e3a8a !important;
+  color: #ffffff !important;
+  border: 1px solid #1e3a8a !important;
+  border-radius: 12px !important;
+  box-shadow: 0 6px 16px rgba(30,58,138,0.2) !important;
+  font-weight: 700 !important;
+}
+.models-panel button.secondary:hover,
+.models-panel button.secondary:hover span,
+.models-apply-row button:hover,
+.models-apply-row button:hover span,
+.models-apply-row button.secondary:hover,
+.models-apply-row button.secondary:hover span,
+.models-apply-row button.primary:hover,
+.models-apply-row button.primary:hover span {
+  background: #2563eb !important;
+  background-color: #2563eb !important;
+  border-color: #2563eb !important;
+  color: #ffffff !important;
 }
 
-.action-panel {
-  padding: 0.75rem 0.9rem;
-  margin: 0.15rem 0 0.85rem;
-}
 .results-head {
-  margin: 0.55rem 0 0.65rem;
-  font-size: 0.78rem; font-weight: 750; letter-spacing: 0.1em;
-  text-transform: uppercase; color: var(--ans-muted);
+  margin: 0.75rem 0 0.85rem;
+  padding: 0;
+  font-size: 1.25rem !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #1e3a8a !important;
+  text-align: center;
+  background: transparent !important;
+  background-color: transparent !important;
+  border: none !important;
+  border-radius: 0;
+  box-shadow: none !important;
+}
+.gradio-container .results-head {
+  font-size: 1.25rem !important;
+  font-weight: 800 !important;
+  color: #1e3a8a !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
 }
 
-/* Soften Gradio chrome */
-button.primary, .primary {
+/* Primary buttons: dark blue + white text */
+button.primary, .primary,
+button.primary span, .primary span {
   border-radius: 12px !important;
-  box-shadow: 0 8px 18px rgba(15,118,110,0.22) !important;
+  background: #1e3a8a !important;
+  color: #ffffff !important;
+  border: 1px solid #1e3a8a !important;
+  box-shadow: 0 6px 16px rgba(30,58,138,0.2) !important;
+  font-weight: 700 !important;
 }
-.secondary-wrap button, button.secondary {
+button.primary:hover, .primary:hover,
+button.primary:hover span, .primary:hover span {
+  background: #2563eb !important;
+  border-color: #2563eb !important;
+  color: #ffffff !important;
+}
+.models-apply-row button.secondary,
+.secondary-wrap button, button.secondary,
+.models-apply-row button.secondary span,
+.secondary-wrap button span, button.secondary span {
   border-radius: 12px !important;
+  border-color: #1e3a8a !important;
+  background: #1e3a8a !important;
+  background-color: #1e3a8a !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+}
+.models-apply-row button.secondary:hover,
+.models-apply-row button.secondary:hover span {
+  background: #2563eb !important;
+  background-color: #2563eb !important;
+  border-color: #2563eb !important;
+  color: #ffffff !important;
+}
+/* Keep primary buttons dark blue (not treated as dark containers) */
+button.primary, .primary,
+button.primary span, .primary span,
+.request-run-row button.primary,
+.request-run-row button.primary span {
+  background: #1e3a8a !important;
+  background-color: #1e3a8a !important;
+  color: #ffffff !important;
+  border-color: #1e3a8a !important;
+}
+button.primary:hover, .primary:hover,
+button.primary:hover span, .primary:hover span,
+.request-run-row button.primary:hover,
+.request-run-row button.primary:hover span {
+  background: #2563eb !important;
+  background-color: #2563eb !important;
+  border-color: #2563eb !important;
+  color: #ffffff !important;
 }
 footer { display: none !important; }
 
 @media (max-width: 720px) {
-  .models-status { grid-template-columns: 1fr; }
   .app-header h1 { font-size: 1.5rem; }
   .meta-bar { border-radius: 14px; }
 }
@@ -999,50 +1516,34 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
         for i in range(n)
     ]
 
-    target_preset_choices = MODEL_PRESETS + [("Custom HF repo…", CUSTOM_PRESET)]
+    target_preset_choices = MODEL_PRESETS
     attacker_preset_choices = [
         ("Same as Target", SAME_AS_TARGET),
-    ] + MODEL_PRESETS + [("Custom HF repo…", CUSTOM_PRESET)]
+    ] + MODEL_PRESETS
 
     preset_repos = {repo for _, repo in MODEL_PRESETS}
-    if args.target_repo and args.target_repo not in preset_repos:
-        default_target_preset = CUSTOM_PRESET
-        default_target_custom = args.target_repo
+    if args.target_repo and args.target_repo in preset_repos:
+        default_target_preset = args.target_repo
     elif kit.target_repo in preset_repos:
         default_target_preset = kit.target_repo
-        default_target_custom = ""
     else:
-        default_target_preset = CUSTOM_PRESET
-        default_target_custom = kit.target_repo
+        default_target_preset = DEFAULT_MODEL_REPO
 
-    if args.agent_repo and args.agent_repo not in preset_repos:
-        default_attacker_preset = CUSTOM_PRESET
-        default_attacker_custom = args.agent_repo
-    elif args.agent_repo and args.agent_repo in preset_repos:
+    if args.agent_repo and args.agent_repo in preset_repos:
         default_attacker_preset = args.agent_repo
-        default_attacker_custom = ""
     elif kit.agent_repo in preset_repos:
         # Prefer showing the concrete model (e.g. Qwen), not "Same as Target"
         default_attacker_preset = kit.agent_repo
-        default_attacker_custom = ""
     else:
         default_attacker_preset = DEFAULT_MODEL_REPO
-        default_attacker_custom = ""
-
-    ROLE_ATTACKER = "attacker"
-    ROLE_TARGET = "target"
 
     MODE_REQUEST = "request"
     MODE_PROMPT = "prompt"
 
-    empty_meta = (
-        '<div class="meta-bar"><span class="muted">Waiting for a run…</span></div>'
-    )
     empty_strategy = (
         '<div class="panel panel-strategy">'
         '<div class="panel-label">Strategy</div>'
-        '<div class="panel-title">Ready when you are</div>'
-        '<p class="panel-desc muted">Click <b>Run demo</b> to select strategy, '
+        '<p class="panel-desc">Click <b>Run demo</b> to select strategy, '
         "generate an attacker prompt, and query the target.</p>"
         "</div>"
     )
@@ -1060,7 +1561,13 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
 
     def on_mode_change(mode):
         is_prompt = mode == MODE_PROMPT
+        title = (
+            '<div class="request-title">Attacker prompt</div>'
+            if is_prompt
+            else '<div class="request-title">Request</div>'
+        )
         return (
+            title,
             gr.update(visible=not is_prompt),
             gr.update(visible=is_prompt),
         )
@@ -1086,25 +1593,10 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
             return gr.update(value=CUSTOM_RID)
         return gr.update()
 
-    def on_role_toggle(role):
-        is_attacker = role == ROLE_ATTACKER
-        return (
-            gr.update(visible=is_attacker),
-            gr.update(visible=not is_attacker),
-        )
-
-    def on_attacker_preset_change(preset):
-        return gr.update(visible=preset == CUSTOM_PRESET)
-
-    def on_target_preset_change(preset):
-        return gr.update(visible=preset == CUSTOM_PRESET)
-
-    def on_apply_models(target_preset, target_custom, attacker_preset, attacker_custom):
+    def on_apply_models(target_preset, attacker_preset):
         try:
             preview_repo = None
-            if target_preset == CUSTOM_PRESET:
-                preview_repo = (target_custom or "").strip()
-            elif target_preset and target_preset != SAME_AS_TARGET:
+            if target_preset and target_preset != SAME_AS_TARGET:
                 preview_repo = target_preset
             if preview_repo and not model_cache_ready(args.chat_config, preview_repo):
                 logger.warning(
@@ -1117,20 +1609,20 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
                 args,
                 logger,
                 target_preset,
-                target_custom or "",
+                "",
                 attacker_preset,
-                attacker_custom or "",
+                "",
             )
             k = state["kit"]
-            msg = (
-                f"Models loaded · Attacker={short_model_name(k.agent_repo)} · "
-                f"Target={short_model_name(k.target_repo)}"
+            logger.info(
+                "Models loaded · Attacker=%s · Target=%s",
+                short_model_name(k.agent_repo),
+                short_model_name(k.target_repo),
             )
-            return models_status_html(k), msg
         except SystemExit as exc:
-            return models_status_html(state["kit"]), f"Error: {exc}"
+            logger.error("Apply models failed: %s", exc)
         except Exception as exc:
-            return models_status_html(state["kit"]), f"Error: {exc}"
+            logger.error("Apply models failed: %s", exc)
 
     def on_run(mode, rid, request_text, prompt_text):
         k = state["kit"]
@@ -1165,13 +1657,41 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
             )
             return (
                 err,
-                "### Attacker prompt\n\n_Error._",
-                "### Target response\n\n_Error._",
-                empty_meta,
-                f"Error: {exc}",
+                "### Attacker prompt\n\nError.",
+                "### Target response\n\nError.",
             )
 
-    with gr.Blocks(title="Adversarial NeuroSearch Demo") as demo:
+    demo_theme = gr.themes.Soft(
+        primary_hue="blue",
+        secondary_hue="sky",
+        neutral_hue="gray",
+        font=gr.themes.GoogleFont("Montserrat"),
+        font_mono=gr.themes.GoogleFont("Montserrat"),
+    ).set(
+        body_background_fill="#e0f2fe",
+        body_text_color="#111827",
+        block_background_fill="#ffffff",
+        block_border_color="#93c5fd",
+        block_label_text_color="#374151",
+        block_title_text_color="#111827",
+        input_background_fill="#ffffff",
+        input_border_color="#93c5fd",
+        block_radius="*radius_lg",
+        button_primary_background_fill="#1e3a8a",
+        button_primary_background_fill_hover="#2563eb",
+        button_primary_text_color="#ffffff",
+        button_secondary_background_fill="#ffffff",
+        button_secondary_text_color="#111827",
+        border_color_primary="#93c5fd",
+        color_accent="#1e3a8a",
+        color_accent_soft="#dbeafe",
+    )
+
+    with gr.Blocks(
+        title="Adversarial NeuroSearch Demo",
+        css=DEMO_CSS,
+        theme=demo_theme,
+    ) as demo:
         gr.HTML(
             """
             <div class="app-header">
@@ -1186,11 +1706,45 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
 
         with gr.Group(elem_classes=["models-panel"]):
             gr.HTML('<div class="section-label">Active models</div>')
-            models_html = gr.HTML(value=models_status_html(kit))
+            with gr.Row(elem_classes=["models-pick-row"]):
+                with gr.Column(scale=1, min_width=260):
+                    with gr.Group(elem_classes=["model-pick-card", "model-pick-attacker"]):
+                        gr.HTML(
+                            '<div class="model-role">Attacker Model</div>'
+                            '<div class="model-hint">Generates jailbreak prompt</div>'
+                        )
+                        attacker_preset_dd = gr.Dropdown(
+                            choices=attacker_preset_choices,
+                            value=default_attacker_preset,
+                            label="Attacker Model",
+                            show_label=False,
+                            container=False,
+                        )
+                with gr.Column(scale=1, min_width=260):
+                    with gr.Group(elem_classes=["model-pick-card", "model-pick-target"]):
+                        gr.HTML(
+                            '<div class="model-role">Target Model</div>'
+                            '<div class="model-hint">Answers jailbreak prompt</div>'
+                        )
+                        target_preset_dd = gr.Dropdown(
+                            choices=target_preset_choices,
+                            value=default_target_preset,
+                            label="Target Model",
+                            show_label=False,
+                            container=False,
+                        )
+            with gr.Row(elem_classes=["models-apply-row"]):
+                apply_models_btn = gr.Button(
+                    "Apply Models", variant="primary", size="lg"
+                )
 
-        with gr.Row(elem_classes=["input-row"]):
-            with gr.Column(scale=1, min_width=240):
-                with gr.Group(elem_classes=["input-mode-box"]):
+        with gr.Group(elem_classes=["input-stack"]):
+            with gr.Row(elem_classes=["request-top-bar"]):
+                section_title = gr.HTML(
+                    value='<div class="request-title">Request</div>',
+                    elem_classes=["request-title-wrap"],
+                )
+                with gr.Group(elem_classes=["request-mode-toggle"]):
                     input_mode = gr.Radio(
                         choices=[
                             ("Request", MODE_REQUEST),
@@ -1198,135 +1752,70 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
                         ],
                         value=MODE_REQUEST,
                         label="Input mode",
+                        show_label=False,
+                        container=False,
                     )
-            with gr.Column(scale=3, min_width=360):
-                with gr.Group(elem_classes=["request-one-box"]) as request_box:
-                    gr.HTML('<div class="request-title">Request</div>')
-                    with gr.Column(elem_classes=["request-pick"]):
-                        request_dd = gr.Dropdown(
-                            choices=dropdown_choices,
-                            value=CUSTOM_RID,
-                            show_label=False,
-                            label="Request id",
-                            filterable=True,
-                            container=False,
-                        )
-                    with gr.Column(elem_classes=["request-body"]):
-                        request_view = gr.Textbox(
-                            value="",
-                            show_label=False,
-                            label="Request text",
-                            placeholder="Type a custom request, or pick one from the dropdown…",
-                            lines=8,
-                            max_lines=24,
-                            interactive=True,
-                            container=False,
-                        )
+            with gr.Group(elem_classes=["request-one-box"]) as request_box:
+                with gr.Column(elem_classes=["request-pick"]):
+                    request_dd = gr.Dropdown(
+                        choices=dropdown_choices,
+                        value=CUSTOM_RID,
+                        show_label=False,
+                        label="Request id",
+                        filterable=True,
+                        container=False,
+                    )
+                with gr.Column(elem_classes=["request-body"]):
+                    request_view = gr.Textbox(
+                        value="",
+                        show_label=False,
+                        label="Request text",
+                        placeholder="Type a custom request, or pick one from the dropdown…",
+                        lines=8,
+                        max_lines=24,
+                        interactive=True,
+                        container=False,
+                        show_copy_button=False,
+                    )
 
-                with gr.Group(elem_classes=["request-one-box"], visible=False) as prompt_box:
-                    gr.HTML('<div class="request-title">Attacker prompt</div>')
-                    with gr.Column(elem_classes=["request-body"]):
-                        prompt_input = gr.Textbox(
-                            value="",
-                            show_label=False,
-                            label="Attacker prompt",
-                            placeholder="Paste or type the full attacker prompt…",
-                            lines=10,
-                            max_lines=30,
-                            interactive=True,
-                            container=False,
-                        )
+            with gr.Group(elem_classes=["request-one-box"], visible=False) as prompt_box:
+                with gr.Column(elem_classes=["request-body"]):
+                    prompt_input = gr.Textbox(
+                        value="",
+                        show_label=False,
+                        label="Attacker prompt",
+                        placeholder="Paste or type the full attacker prompt…",
+                        lines=10,
+                        max_lines=30,
+                        interactive=True,
+                        container=False,
+                    )
 
-        with gr.Group(elem_classes=["action-panel"]):
-            run_btn = gr.Button("Run demo", variant="primary", size="lg")
-            status = gr.Textbox(
-                label="Status",
-                value="Ready.",
-                interactive=False,
-                max_lines=1,
-                container=True,
-            )
+            with gr.Row(elem_classes=["request-run-row"]):
+                run_btn = gr.Button("Run demo", variant="primary", size="lg")
 
         gr.HTML('<div class="results-head">Results</div>')
-        meta_html = gr.HTML(value=empty_meta)
         strategy_html = gr.HTML(value=empty_strategy)
         prompt_md = gr.Markdown(
-            value="### Attacker prompt\n\n_Generated prompt will appear here…_",
+            value="### Attacker prompt\n\nGenerated prompt will appear here…",
             elem_classes=["result-md"],
         )
         response_md = gr.Markdown(
-            value="### Target response\n\n_Target response will appear here…_",
+            value="### Target response\n\nTarget response will appear here…",
             elem_classes=["result-md"],
         )
-
-        with gr.Accordion("Edit models", open=False):
-            with gr.Group(elem_classes=["models-panel"]):
-                model_role = gr.Radio(
-                    choices=[
-                        ("Attacker", ROLE_ATTACKER),
-                        ("Target", ROLE_TARGET),
-                    ],
-                    value=ROLE_TARGET,
-                    label="Role",
-                    info="Toggle which role to change",
-                )
-                with gr.Group(visible=False) as attacker_edit:
-                    attacker_preset_dd = gr.Dropdown(
-                        choices=attacker_preset_choices,
-                        value=default_attacker_preset,
-                        label="Attacker model",
-                        info="Generates the jailbreak prompt",
-                    )
-                    attacker_custom_tb = gr.Textbox(
-                        value=default_attacker_custom,
-                        label="Custom Attacker HF repo",
-                        placeholder="org/model-name",
-                        visible=(default_attacker_preset == CUSTOM_PRESET),
-                    )
-                with gr.Group(visible=True) as target_edit:
-                    target_preset_dd = gr.Dropdown(
-                        choices=target_preset_choices,
-                        value=default_target_preset,
-                        label="Target model",
-                        info="Answers the jailbreak prompt",
-                    )
-                    target_custom_tb = gr.Textbox(
-                        value=default_target_custom,
-                        label="Custom Target HF repo",
-                        placeholder="org/model-name",
-                        visible=(default_target_preset == CUSTOM_PRESET),
-                    )
-                apply_models_btn = gr.Button("Apply / reload models", variant="secondary")
 
         apply_models_btn.click(
             on_apply_models,
             inputs=[
                 target_preset_dd,
-                target_custom_tb,
                 attacker_preset_dd,
-                attacker_custom_tb,
             ],
-            outputs=[models_html, status],
-        )
-        model_role.change(
-            on_role_toggle,
-            inputs=[model_role],
-            outputs=[attacker_edit, target_edit],
-        )
-        attacker_preset_dd.change(
-            on_attacker_preset_change,
-            inputs=[attacker_preset_dd],
-            outputs=[attacker_custom_tb],
-        )
-        target_preset_dd.change(
-            on_target_preset_change,
-            inputs=[target_preset_dd],
-            outputs=[target_custom_tb],
         )
         input_mode.change(
             on_mode_change,
             inputs=[input_mode],
-            outputs=[request_box, prompt_box],
+            outputs=[section_title, request_box, prompt_box],
         )
         request_dd.change(
             on_pick,
@@ -1341,28 +1830,15 @@ def run_gradio(kit: DemoKit, requests: List[str], args):
         run_btn.click(
             on_run,
             inputs=[input_mode, request_dd, request_view, prompt_input],
-            outputs=[strategy_html, prompt_md, response_md, meta_html, status],
+            outputs=[strategy_html, prompt_md, response_md],
+            show_progress=False,
         )
 
     demo.queue().launch(
         server_name=args.server_name,
         server_port=args.server_port,
         share=args.share,
-        css=DEMO_CSS,
-        theme=gr.themes.Soft(
-            primary_hue="teal",
-            secondary_hue="slate",
-            neutral_hue="slate",
-            font=gr.themes.GoogleFont("Plus Jakarta Sans"),
-            font_mono=gr.themes.GoogleFont("IBM Plex Mono"),
-        ).set(
-            body_background_fill="*neutral_50",
-            block_radius="*radius_lg",
-            button_primary_background_fill="#0f766e",
-            button_primary_background_fill_hover="#0d9488",
-            button_primary_text_color="#ffffff",
-            border_color_primary="#e2e8f0",
-        ),
+        ssr_mode=False,
     )
 
 

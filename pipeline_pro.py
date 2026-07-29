@@ -91,7 +91,7 @@ class AutoDANTurboPro():
         if not self.pro_enable_feedback_refine:
             self.logger.info(
                 "PRO: Feedback & Refine disabled (no diagnose/refine LLM calls; "
-                "improved_variable hints cleared; prior_attempt still active)."
+                "improved_variable hints cleared; GOAT prompt is first-shot only)."
             )
         self._request_feedback_spent_ms = 0.0
         self._prev_best_failed_score = None
@@ -1827,9 +1827,6 @@ class AutoDANTurboPro():
             request=request,
             top_strategies=top_strategies,
             n=self.pro_n_candidates,
-            improved_variable=improved_variable,
-            prior_attempt_prompt=getattr(self, "prior_attempt_prompt", "") or "",
-            prior_attempt_response=getattr(self, "prior_attempt_response", "") or "",
             strategy_sets=strategy_sets,
         )
         goat_items, _ = goat_output
